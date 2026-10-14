@@ -1,0 +1,28 @@
+# Local credentials and API workspaces
+.env
+.env.*
+!.env.example
+/workspace.json
+/workspace*.json
+*.local.json
+*.pem
+*.key
+/reports/
+
+# Python and packaging output
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editor and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

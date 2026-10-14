@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "api-test-client"
+version = "0.1.0"
+description = "A lightweight local API client with environments, endpoint tests, and request sequences."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "UALR CORE Center"}]
+keywords = ["api", "http", "testing", "rest", "environments"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Web Environment",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Software Development :: Testing",
+]
+
+[project.urls]
+Repository = "https://github.com/UALR-CORE-Center/api-test-client"
+Issues = "https://github.com/UALR-CORE-Center/api-test-client/issues"
+
+[project.scripts]
+api-test-client = "api_test_client.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["api_test_client*"]
+
+[tool.setuptools.package-data]
+api_test_client = ["static/*.html", "static/*.css", "static/*.js"]

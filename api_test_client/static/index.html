@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>API Test Client</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23127772'/%3E%3Cpath d='m22 20-12 12 12 12m20-24 12 12-12 12M36 16l-8 32' fill='none' stroke='white' stroke-width='5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to request editor</a>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Workspace navigation">
+      <a class="brand" href="/" aria-label="API Test Client home"><span class="brand-mark" aria-hidden="true">&lt;/&gt;</span><span>API Test Client<small>Your local API workspace</small></span></a>
+      <div class="workspace-label"><span class="live-dot" aria-hidden="true"></span> LOCAL WORKSPACE</div>
+      <label class="search-field"><span aria-hidden="true">⌕</span><input id="workspace-search" type="search" placeholder="Find requests or sequences" aria-label="Find requests or sequences"></label>
+      <div class="sidebar-group">
+        <div class="sidebar-heading"><h2>Requests <span id="request-count" class="count">0</span></h2><button id="new-request" class="icon-button" aria-label="New request" title="New request">+</button></div>
+        <nav id="request-list" aria-label="Saved requests"></nav>
+      </div>
+      <div class="sidebar-group">
+        <div class="sidebar-heading"><h2>Sequences <span id="sequence-count" class="count">0</span></h2><button id="new-sequence" class="icon-button" aria-label="New sequence" title="New sequence">+</button></div>
+        <nav id="sequence-list" aria-label="Saved sequences"></nav>
+      </div>
+      <div class="sidebar-bottom">
+        <button id="global-variables" class="sidebar-action"><span aria-hidden="true">{ }</span> Global variables</button>
+        <div class="transfer-actions"><button id="import-workspace">Import</button><button id="export-workspace">Export</button></div>
+        <p>Runs on your machine.<br>No account. No cloud sync.</p>
+      </div>
+    </aside>
+
+    <div class="workspace">
+      <header class="topbar">
+        <div class="topbar-title"><span>Workspace</span><span class="topbar-divider" aria-hidden="true">/</span><strong id="topbar-item">New request</strong></div>
+        <div class="environment-control"><span class="environment-dot" aria-hidden="true"></span><label class="sr-only" for="environment-picker">Active environment</label><select id="environment-picker"></select><button id="edit-environment" class="icon-button" aria-label="Edit environments" title="Edit environments">⚙</button><button id="new-environment" class="icon-button" aria-label="Add environment" title="Add environment">+</button></div>
+      </header>
+
+      <main id="main" tabindex="-1">
+        <div id="loading-state" class="loading-state"><span class="spinner" aria-hidden="true"></span>Opening your workspace…</div>
+        <div id="app-content" hidden>
+          <div class="editor-heading">
+            <div><p class="eyebrow" id="editor-kind">REQUEST EDITOR</p><div class="name-row"><label class="sr-only" for="item-name">Request or sequence name</label><input id="item-name" class="item-name" placeholder="Untitled request"><span id="unsaved-indicator" class="unsaved-indicator" hidden>Unsaved</span></div></div>
+            <div class="editor-actions"><button id="duplicate-item" class="button quiet" title="Duplicate saved item">Duplicate</button><button id="delete-item" class="button quiet danger-text" title="Delete saved item">Delete</button><button id="save-item" class="button secondary"><span aria-hidden="true">↧</span> Save</button></div>
+          </div>
+
+          <section id="request-editor" aria-label="Request editor">
+            <div class="request-url-row"><label class="sr-only" for="request-method">HTTP method</label><select id="request-method" class="method-select"><option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option><option>HEAD</option><option>OPTIONS</option></select><label class="sr-only" for="request-url">Request URL</label><input id="request-url" class="url-input" placeholder="{{base_url}}/endpoint" spellcheck="false" autocomplete="off"><button id="send-request" class="button primary"><span aria-hidden="true">↗</span> Send <kbd>⌘ ↵</kbd></button></div>
+            <div class="request-context"><span>Use <code>{{variable}}</code> in URLs, headers, and bodies.</span><span id="environment-summary"></span></div>
+            <div class="editor-card">
+              <div class="tabs" id="request-tabs" role="tablist" aria-label="Request configuration">
+                <button id="tab-params" role="tab" aria-selected="true" aria-controls="panel-params" data-tab="params">Params <span id="params-count"></span></button>
+                <button id="tab-headers" role="tab" aria-selected="false" aria-controls="panel-headers" data-tab="headers" tabindex="-1">Headers <span id="headers-count"></span></button>
+                <button id="tab-body" role="tab" aria-selected="false" aria-controls="panel-body" data-tab="body" tabindex="-1">Body</button>
+                <button id="tab-auth" role="tab" aria-selected="false" aria-controls="panel-auth" data-tab="auth" tabindex="-1">Auth</button>
+                <button id="tab-tests" role="tab" aria-selected="false" aria-controls="panel-tests" data-tab="tests" tabindex="-1">Tests <span id="tests-count"></span></button>
+                <button id="tab-extract" role="tab" aria-selected="false" aria-controls="panel-extract" data-tab="extract" tabindex="-1">Extract <span id="extract-count"></span></button>
+              </div>
+              <div id="panel-params" class="tab-panel" role="tabpanel" aria-labelledby="tab-params"><div class="panel-topline"><p>Query parameters are added to the request URL.</p><button class="button small secondary" data-add-row="params">+ Add parameter</button></div><div id="params-rows" class="key-value-table"></div></div>
+              <div id="panel-headers" class="tab-panel" role="tabpanel" aria-labelledby="tab-headers" hidden><div class="panel-topline"><p>Set request headers. Disabled rows are kept for later.</p><button class="button small secondary" data-add-row="headers">+ Add header</button></div><div id="headers-rows" class="key-value-table"></div></div>
+              <div id="panel-body" class="tab-panel" role="tabpanel" aria-labelledby="tab-body" hidden><div class="panel-topline"><label class="inline-field" for="body-type">Body format <select id="body-type"><option value="none">No body</option><option value="json">JSON</option><option value="text">Plain text</option><option value="form">URL-encoded form</option></select></label><button id="format-body" class="button small secondary">Format JSON</button></div><p id="body-help" class="field-help">This request does not include a body.</p><label class="sr-only" for="request-body">Request body</label><textarea id="request-body" class="code-input body-input" spellcheck="false" placeholder='{"name": "{{name}}"}'></textarea></div>
+              <div id="panel-auth" class="tab-panel" role="tabpanel" aria-labelledby="tab-auth" hidden><label class="inline-field" for="request-auth-type">Authentication <select id="request-auth-type"><option value="inherit">Use environment auth</option><option value="none">No authentication</option><option value="bearer">Bearer token</option><option value="api_key">API key</option><option value="basic">Basic authentication</option></select></label><div id="request-auth-fields" class="auth-fields"></div><p class="field-help">Store credentials in your environment and reference them with <code>{{api_key}}</code> or a secret variable. Workspace files on disk include credentials; exports remove recognized secrets.</p></div>
+              <div id="panel-tests" class="tab-panel" role="tabpanel" aria-labelledby="tab-tests" hidden><div class="panel-topline"><p>Assertions run after each response, including sequence steps.</p><button id="format-tests" class="button small secondary">Format JSON</button></div><label class="sr-only" for="request-tests">Assertions JSON array</label><textarea id="request-tests" class="code-input" spellcheck="false"></textarea><details class="examples"><summary>Assertion examples</summary><pre>[
+  {"type": "status", "expected": 200},
+  {"type": "json_equals", "path": "$.status", "expected": "ok"},
+  {"type": "json_exists", "path": "$.id"},
+  {"type": "body_contains", "expected": "ready"},
+  {"type": "header_equals", "path": "content-type", "expected": "application/json"},
+  {"type": "time_below", "expected": 1000}
+]</pre></details></div>
+              <div id="panel-extract" class="tab-panel" role="tabpanel" aria-labelledby="tab-extract" hidden><div class="panel-topline"><p>Extract JSON values as variables for later sequence steps.</p><button id="format-extract" class="button small secondary">Format JSON</button></div><label class="sr-only" for="request-extract">Extract rules JSON array</label><textarea id="request-extract" class="code-input" spellcheck="false"></textarea><p class="field-help">Example: <code>[{"name": "asset_id", "path": "$.id"}]</code>. Later requests can use <code>{{asset_id}}</code>.</p></div>
+            </div>
+            <div class="execution-settings"><label for="request-timeout">Timeout <input id="request-timeout" type="number" min="1" max="300" step="1"> seconds</label><label class="checkbox-label"><input id="follow-redirects" type="checkbox"> Follow redirects</label><span class="subtle">Send with <kbd id="shortcut-label">Ctrl Enter</kbd></span></div>
+          </section>
+
+          <section id="sequence-editor" aria-label="Sequence editor" hidden>
+            <div class="sequence-banner"><div><span class="sequence-symbol" aria-hidden="true">≋</span><div><strong>One environment. Multiple requests.</strong><p>Run saved requests in order. Extracted values flow into the next step.</p></div></div><button id="run-sequence" class="button primary"><span aria-hidden="true">▶</span> Run sequence</button></div>
+            <div class="sequence-options"><label class="checkbox-label"><input id="stop-on-failure" type="checkbox"> Stop when a request or assertion fails</label><button id="add-sequence-step" class="button small secondary">+ Add step</button></div>
+            <div id="sequence-steps"></div>
+          </section>
+
+          <details class="runtime-options"><summary>Run variables <span>Optional overrides for this run</span></summary><label for="runtime-variables">JSON object</label><textarea id="runtime-variables" class="code-input compact" spellcheck="false" placeholder='{"asset_id": "123"}'>{}</textarea><p class="field-help">Run values override global and environment variables. Step overrides apply to that step; newly extracted values carry forward.</p></details>
+
+          <section id="sequence-results" class="sequence-results" aria-label="Sequence run results" hidden><div class="section-topline"><h2>Sequence run <span id="sequence-run-state" class="run-state"></span></h2><button id="cancel-sequence" class="button small secondary" hidden>Cancel run</button></div><div id="sequence-run-output"></div></section>
+
+          <section class="response-card" aria-label="Response">
+            <div class="response-heading"><h2>Response</h2><div id="response-metrics" class="response-metrics"></div></div>
+            <div id="response-empty" class="response-empty"><div class="response-empty-icon" aria-hidden="true">↗</div><strong>Ready when you are</strong><p>Send a request to inspect the response and test results.</p><span>Try the included local demo to get started.</span></div>
+            <div id="response-loading" class="response-empty" hidden><span class="spinner" aria-hidden="true"></span><strong>Waiting for response…</strong><p id="response-loading-detail"></p></div>
+            <div id="response-content" hidden>
+              <div class="tabs response-tabs" id="response-tabs" role="tablist" aria-label="Response details"><button id="response-tab-body" role="tab" aria-selected="true" aria-controls="response-panel-body" data-tab="body">Body</button><button id="response-tab-headers" role="tab" aria-selected="false" aria-controls="response-panel-headers" data-tab="headers" tabindex="-1">Headers</button><button id="response-tab-tests" role="tab" aria-selected="false" aria-controls="response-panel-tests" data-tab="tests" tabindex="-1">Tests <span id="response-test-count"></span></button><button id="response-tab-variables" role="tab" aria-selected="false" aria-controls="response-panel-variables" data-tab="variables" tabindex="-1">Extracted</button><button id="copy-response" class="button small quiet copy-button">Copy body</button></div>
+              <div id="response-notice" class="response-notice" hidden></div>
+              <div id="response-panel-body" role="tabpanel" aria-labelledby="response-tab-body"><pre id="response-body" class="response-body" tabindex="0"></pre></div>
+              <div id="response-panel-headers" class="response-panel" role="tabpanel" aria-labelledby="response-tab-headers" hidden><div id="response-headers"></div></div>
+              <div id="response-panel-tests" class="response-panel" role="tabpanel" aria-labelledby="response-tab-tests" hidden><div id="response-tests"></div></div>
+              <div id="response-panel-variables" class="response-panel" role="tabpanel" aria-labelledby="response-tab-variables" hidden><div id="response-variables"></div></div>
+            </div>
+          </section>
+          <footer class="workspace-footer"><span>API Test Client</span><span>Simple requests. Repeatable tests.</span></footer>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <dialog id="environment-dialog" class="modal"><form id="environment-form"><div class="modal-heading"><div><p class="eyebrow">CONTEXT</p><h2 id="environment-dialog-title">Edit environment</h2></div><button type="button" class="icon-button modal-close" aria-label="Close environment dialog">×</button></div><div class="modal-body"><div class="form-grid"><label>Name<input id="env-name" required maxlength="200" placeholder="Development"></label><label>Base URL<input id="env-url" placeholder="http://localhost:8080" spellcheck="false" autocomplete="off"></label><label>API key <span class="field-optional">Available as {{api_key}}</span><input id="env-api-key" type="password" autocomplete="new-password" spellcheck="false"></label><label>Default authentication<select id="env-auth-type"><option value="none">No authentication</option><option value="bearer">Bearer token</option><option value="api_key">API key</option><option value="basic">Basic authentication</option></select></label></div><div id="env-auth-fields" class="auth-fields"></div><div class="panel-topline variables-heading"><h3>Environment variables</h3><button type="button" id="add-env-variable" class="button small secondary">+ Add variable</button></div><div id="env-variable-rows" class="key-value-table variable-table"></div><p class="field-help">Environment variables override globals. Mark sensitive values as secret so they are removed on export. Credentials are stored locally without encryption.</p></div><div class="modal-footer"><button type="button" id="delete-environment" class="button quiet danger-text">Delete environment</button><div><button type="button" class="button secondary modal-close">Cancel</button><button type="submit" class="button primary">Save environment</button></div></div></form></dialog>
+
+  <dialog id="variables-dialog" class="modal"><form id="variables-form"><div class="modal-heading"><div><p class="eyebrow">WORKSPACE</p><h2>Global variables</h2></div><button type="button" class="icon-button modal-close" aria-label="Close global variables dialog">×</button></div><div class="modal-body"><div class="panel-topline"><p>Shared across all environments and requests.</p><button type="button" id="add-global-variable" class="button small secondary">+ Add variable</button></div><div id="global-variable-rows" class="key-value-table variable-table"></div><p class="field-help">Use <code>{{variable_name}}</code> anywhere in a request. Environment and run variables take precedence. Secret values are removed on export.</p></div><div class="modal-footer"><span></span><div><button type="button" class="button secondary modal-close">Cancel</button><button type="submit" class="button primary">Save variables</button></div></div></form></dialog>
+  <input id="import-file" type="file" accept=".json,application/json" hidden>
+  <div id="toast-region" class="toast-region" role="status" aria-live="polite" aria-atomic="true"></div>
+</body>
+</html>
