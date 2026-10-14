@@ -6,25 +6,44 @@ the application. Loading files never sends requests automatically.
 
 ## Start with the included example
 
-From the repository root, copy the private template and start the web app.
+From the repository root, copy the private template into `private-config/`
+and start the web app.
 
 **Windows**
 
 ```powershell
-Copy-Item examples/basic.private.example.json examples/basic.private.json
-py -m api_test_client --config examples/basic.tests.json --private-config examples/basic.private.json
+Copy-Item examples/basic.private.example.json private-config/basic.private.json
+py -m api_test_client --config examples/basic.tests.json --private-config private-config/basic.private.json --workspace private-config/workspace.local.json
 ```
 
 **macOS / Linux**
 
 ```sh
-cp examples/basic.private.example.json examples/basic.private.json
-python3 -m api_test_client --config examples/basic.tests.json --private-config examples/basic.private.json
+cp examples/basic.private.example.json private-config/basic.private.json
+python3 -m api_test_client --config examples/basic.tests.json --private-config private-config/basic.private.json --workspace private-config/workspace.local.json
 ```
 
 Choose **Basic checks** in the Sequences view and click Run. It checks the local
 demo API's health and echoes a JSON payload from a file. No API key is needed.
 For a different server port, also change `base_url` in your private file.
+
+## Keep local test kits together
+
+The repository includes `private-config/` for your own test definitions,
+credentials, payloads, workspaces, and reports. Everything inside it is ignored
+by Git except the instruction README that keeps the folder in fresh clones.
+Extract downloaded test kits directly into this folder, retaining their
+`payloads/` directories. The loader resolves payload paths relative to the
+configuration file, so moving a complete kit preserves its references.
+
+For a kit containing `tests.json` and `settings.private.json`, run:
+
+```powershell
+py -m api_test_client --config private-config/tests.json --private-config private-config/settings.private.json --workspace private-config/workspace.local.json
+```
+
+Use the actual filenames supplied by your kit. You can also keep independent
+kits in subfolders, such as `private-config/project-a/`; they are ignored too.
 
 ## A complete startup configuration
 
@@ -145,7 +164,8 @@ as strings. Private variables default to `secret: true`; set `secret: false`
 for nonsecret values you want to keep in exports. Public variables default to
 `secret: false`. Authentication secrets are removed from exports regardless.
 
-`*.private.json` and the repository's `local-tests/` directory are ignored by
+The contents of `private-config/` (except its instruction README),
+`*.private.json`, and the repository's `local-tests/` directory are ignored by
 Git. Credentials also exist in the writable workspace copy, in plaintext; keep
 both private settings and workspace copies out of version control.
 
@@ -190,13 +210,13 @@ array, object, or string and a nonnegative integer expectation. See the
 Start without opening a browser:
 
 ```sh
-python3 -m api_test_client serve --config examples/basic.tests.json --private-config examples/basic.private.json --no-browser
+python3 -m api_test_client serve --config examples/basic.tests.json --private-config private-config/basic.private.json --workspace private-config/workspace.local.json --no-browser
 ```
 
 For this demo, leave that server running and use a second terminal to execute:
 
 ```sh
-python3 -m api_test_client run --config examples/basic.tests.json --private-config examples/basic.private.json --sequence basic-checks --output reports/basic.json
+python3 -m api_test_client run --config examples/basic.tests.json --private-config private-config/basic.private.json --workspace private-config/workspace.local.json --sequence basic-checks --output private-config/basic.report.json
 ```
 
 On Windows, replace `python3` with `py`. A real external API needs only the

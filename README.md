@@ -66,15 +66,15 @@ and local variables in a separate private file.
 Try the included example on **Windows**:
 
 ```powershell
-Copy-Item examples/basic.private.example.json examples/basic.private.json
-py -m api_test_client --config examples/basic.tests.json --private-config examples/basic.private.json
+Copy-Item examples/basic.private.example.json private-config/basic.private.json
+py -m api_test_client --config examples/basic.tests.json --private-config private-config/basic.private.json --workspace private-config/workspace.local.json
 ```
 
 On **macOS / Linux**:
 
 ```sh
-cp examples/basic.private.example.json examples/basic.private.json
-python3 -m api_test_client --config examples/basic.tests.json --private-config examples/basic.private.json
+cp examples/basic.private.example.json private-config/basic.private.json
+python3 -m api_test_client --config examples/basic.tests.json --private-config private-config/basic.private.json --workspace private-config/workspace.local.json
 ```
 
 Choose **Basic checks** in the Sequences view and run it. Startup loads tests;
@@ -88,9 +88,16 @@ restarting with `--config` replaces previous browser edits in the copy. Your
 source configuration, private file, and payload files are not changed by saves.
 Starting without `--config` uses the normal existing workspace.
 
+Use [private-config/](private-config/README.md) for local test collections,
+credentials, payload files, workspaces, and reports. All contents except its
+instruction README are ignored by Git. To use a downloaded test kit, extract
+its configuration files and payload folders there and pass those paths to
+`--config` and `--private-config`. Relative `body_file` references keep working
+when the whole kit moves together.
+
 Files ending in `.private.json` and the repository's `local-tests/` directory
-are ignored by Git. See [Configuration files](docs/configuration.md) for the
-schema, payload files, authentication examples, and terminal runs.
+are also ignored by Git. See [Configuration files](docs/configuration.md) for
+the schema, payload files, authentication examples, and terminal runs.
 
 ## Environments and variables
 
