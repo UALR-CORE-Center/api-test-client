@@ -1,0 +1,17 @@
+{
+  "active_environment_id": "local-demo",
+  "environments": [
+    {
+      "id": "local-demo",
+      "base_url": "http://127.0.0.1:8765",
+      "api_key": "",
+      "variables": [
+        {
+          "key": "message",
+          "value": "Hello from my private configuration",
+          "secret": false
+        }
+      ]
+    }
+  ]
+}

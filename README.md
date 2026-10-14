@@ -55,6 +55,42 @@ On Windows, use `py` in place of `python`; on macOS/Linux, use `python3` if need
   when a step fails.
 - Save your workspace locally and import or export it.
 - Run saved sequences from the command line for repeatable checks.
+- Load reusable tests and separate private settings at startup.
+
+## Load tests from files
+
+Use a startup configuration to load environments, saved requests, assertions,
+and sequences without entering them in the browser. Keep your URL, API key,
+and local variables in a separate private file.
+
+Try the included example on **Windows**:
+
+```powershell
+Copy-Item examples/basic.private.example.json examples/basic.private.json
+py -m api_test_client --config examples/basic.tests.json --private-config examples/basic.private.json
+```
+
+On **macOS / Linux**:
+
+```sh
+cp examples/basic.private.example.json examples/basic.private.json
+python3 -m api_test_client --config examples/basic.tests.json --private-config examples/basic.private.json
+```
+
+Choose **Basic checks** in the Sequences view and run it. Startup loads tests;
+it does not send requests automatically. The example uses the app's local demo
+API and needs no API key. When adapting it for another API, edit the private
+file's `base_url` and `api_key`, and set the authentication mode in the test file.
+
+Each start with `--config` reloads the source files into a writable workspace
+copy. Browser edits are saved to that copy, so restart to apply file changes;
+restarting with `--config` replaces previous browser edits in the copy. Your
+source configuration, private file, and payload files are not changed by saves.
+Starting without `--config` uses the normal existing workspace.
+
+Files ending in `.private.json` and the repository's `local-tests/` directory
+are ignored by Git. See [Configuration files](docs/configuration.md) for the
+schema, payload files, authentication examples, and terminal runs.
 
 ## Environments and variables
 
@@ -88,6 +124,12 @@ runtime variables override environment values. The environment also exposes
 with the same names. Extracted values can be passed to subsequent sequence steps;
 a step's variable overrides apply to that step and override extracted values.
 
+Use `{{$uuid}}`, `{{$timestamp}}`, and `{{$timestamp_minus_1h}}` for a fresh UUID,
+current UTC timestamp, and UTC timestamp one hour earlier. These values remain
+stable throughout one sequence and refresh for each new run. They are reserved
+and cannot be overridden. Ordinary variables can alias them, for example
+`"run_id": "{{$uuid}}"`.
+
 Mark credential variables as **secret** so they are removed from workspace
 exports. For JSON bodies, substituted values must still produce valid JSON;
 place quotes around string placeholders where needed.
@@ -113,6 +155,8 @@ Assertions run against the response:
 | `status` | HTTP status equals the expected code. |
 | `json_equals` | A JSON path equals the expected value. |
 | `json_exists` | A JSON path exists. |
+| `json_greater_than` | A numeric JSON value exceeds a numeric expectation. |
+| `json_length_equals` | A JSON array, object, or string has the expected length. |
 | `body_contains` | The response body contains text. |
 | `header_equals` | A response header equals the expected value. |
 | `time_below` | Response time is below a threshold in milliseconds. |
@@ -124,6 +168,12 @@ such as HTTP 404; a matching expected status can make that request pass.
 JSON paths support object fields and array indexes, for example `$.id` and
 `$.assets[0].name`. These are simple paths; wildcard matching, filters, and
 recursive JSONPath expressions are outside this version's scope.
+
+Assertion expectations can use variables, such as
+`"expected": "{{asset_id}}"`. String templates compare as strings; use literal
+JSON numbers or booleans to check those types. Set `expected_variable` instead
+of `expected` to compare a typed extracted value, including a complete previous
+JSON response. See [Configuration files](docs/configuration.md) for examples.
 
 Define an extractor with a variable name and JSON path to reuse a response
 value. For example, extract `$.id` as `asset_id`, then use `{{asset_id}}` in the
@@ -213,7 +263,7 @@ guidelines.
 
 ## Scope
 
-This first release focuses on ordinary HTTP API requests. Multipart uploads,
+The client focuses on ordinary HTTP API requests. Multipart uploads,
 interactive OAuth login flows, WebSockets, and arbitrary scripted hooks are not
 included. Use variables or bearer authentication for tokens obtained elsewhere.
 

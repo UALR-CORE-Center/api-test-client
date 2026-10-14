@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "active_environment_id": "local-demo",
+  "variables": {
+    "run_id": "{{$uuid}}",
+    "sent_at": "{{$timestamp}}"
+  },
+  "environments": [
+    {
+      "id": "local-demo",
+      "name": "Local demo",
+      "base_url": "http://127.0.0.1:8765",
+      "api_key": "",
+      "auth": {"type": "none"},
+      "variables": {"message": "Hello from the startup configuration"}
+    }
+  ],
+  "requests": [
+    {
+      "id": "health",
+      "name": "Check health",
+      "method": "GET",
+      "url": "/demo/health",
+      "assertions": [
+        {"type": "status", "expected": 200},
+        {"type": "json_equals", "path": "$.status", "expected": "healthy"}
+      ],
+      "extract": [{"name": "demo_id", "path": "$.id"}]
+    },
+    {
+      "id": "echo",
+      "name": "Send a payload file",
+      "method": "POST",
+      "url": "/demo/echo",
+      "body_type": "json",
+      "body_file": "payloads/echo.json",
+      "assertions": [
+        {"type": "status", "expected": 200},
+        {"type": "json_equals", "path": "$.received.message", "expected": "{{message}}"},
+        {"type": "json_equals", "path": "$.received.run_id", "expected": "{{run_id}}"},
+        {"type": "json_equals", "path": "$.received.sent_at", "expected": "{{sent_at}}"},
+        {"type": "json_length_equals", "path": "$.received", "expected": 3}
+      ]
+    }
+  ],
+  "sequences": [
+    {
+      "id": "basic-checks",
+      "name": "Basic checks",
+      "stop_on_failure": true,
+      "steps": [
+        {"request_id": "health"},
+        {"request_id": "echo"}
+      ]
+    }
+  ]
+}

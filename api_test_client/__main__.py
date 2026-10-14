@@ -7,8 +7,9 @@ import re
 import sys
 
 from .engine import run_sequence
+from .config import paths_collide, prepare_workspace
 from .server import select_environment, serve
-from .workspace import WorkspaceStore, atomic_write, default_path, redact_report
+from .workspace import WorkspaceStore, atomic_write, redact_report
 
 
 def main(argv=None):
@@ -18,11 +19,15 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="A lightweight local API client and sequence runner.")
     commands = parser.add_subparsers(dest="command", required=True)
     browser = commands.add_parser("serve", help="Open the local browser interface (default)")
-    browser.add_argument("--workspace", type=Path, default=default_path())
+    browser.add_argument("--workspace", type=Path, help="Writable workspace path; importing a config replaces its contents")
+    browser.add_argument("--config", type=Path, help="Load reusable tests from a JSON configuration before startup")
+    browser.add_argument("--private-config", type=Path, help="Overlay local environment settings and variables (requires --config)")
     browser.add_argument("--port", type=int, default=8765)
     browser.add_argument("--no-browser", action="store_true")
     runner = commands.add_parser("run", help="Run a saved sequence and emit a JSON report")
-    runner.add_argument("--workspace", type=Path, default=default_path())
+    runner.add_argument("--workspace", type=Path, help="Writable workspace path; importing a config replaces its contents")
+    runner.add_argument("--config", type=Path, help="Load reusable tests from a JSON configuration before running")
+    runner.add_argument("--private-config", type=Path, help="Overlay local environment settings and variables (requires --config)")
     runner.add_argument("--sequence", required=True, help="Sequence id or unique name")
     runner.add_argument("--environment", help="Environment id or unique name; default: active environment")
     runner.add_argument("--var", action="append", default=[], metavar="KEY=VALUE", help="Override a variable; repeatable")
@@ -30,9 +35,10 @@ def main(argv=None):
     runner.add_argument("--show-secrets", action="store_true", help="Include credential values in the report (otherwise redacted)")
     args = parser.parse_args(argv)
     try:
+        if args.command == "serve" and not 0 <= args.port <= 65535:
+            raise ValueError("Port must be between 0 and 65535 (0 selects an available port).")
+        args.workspace, source_paths = prepare_workspace(args.config, args.private_config, args.workspace)
         if args.command == "serve":
-            if not 0 <= args.port <= 65535:
-                raise ValueError("Port must be between 0 and 65535 (0 selects an available port).")
             serve(args.workspace, args.port, not args.no_browser)
             return 0
         if not args.workspace.expanduser().exists():
@@ -50,8 +56,8 @@ def main(argv=None):
             if not separator or not key.strip():
                 raise ValueError("Each --var must use KEY=VALUE.")
             variables[key.strip()] = value
-        if args.output and args.output.expanduser().resolve() == args.workspace.expanduser().resolve():
-            raise ValueError("Report output must not overwrite the workspace.")
+        if args.output and any(paths_collide(args.output, source) for source in (args.workspace, *source_paths)):
+            raise ValueError("Report output must not overwrite the workspace, configuration, or body source files.")
         result = run_sequence(candidates[0], workspace["requests"], environment,
                               variables=variables, globals=workspace["variables"])
         if not args.show_secrets:

@@ -12,7 +12,9 @@ import json
 import re
 import socket
 import time
+import uuid
 from collections.abc import Mapping
+from datetime import datetime, timedelta, timezone
 from http.client import HTTPException
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -22,6 +24,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 _VARIABLE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
+_RESERVED_VARIABLES = frozenset(("$uuid", "$timestamp", "$timestamp_minus_1h"))
 
 
 class RequestError(ValueError):
@@ -100,6 +103,46 @@ def _interpolate(value: Any, variables: Mapping[str, Any]) -> str:
     return expand(_text(value))
 
 
+def _run_variables() -> dict[str, str]:
+    """Generate stable, credential-free values for one request or sequence run."""
+    now = datetime.now(timezone.utc)
+    return {
+        "$uuid": str(uuid.uuid4()),
+        "$timestamp": now.isoformat().replace("+00:00", "Z"),
+        "$timestamp_minus_1h": (now - timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
+    }
+
+
+def _expected_value(value: Any, variables: Mapping[str, Any]) -> Any:
+    """Interpolate expectation strings while retaining literal JSON types."""
+    if isinstance(value, str):
+        return _interpolate(value, variables)
+    if isinstance(value, dict):
+        return {key: _expected_value(item, variables) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_expected_value(item, variables) for item in value]
+    return value
+
+
+def _json_equal(value: Any, expected: Any) -> bool:
+    """Compare JSON values without Python's boolean/number equivalence."""
+    if isinstance(value, bool) or isinstance(expected, bool):
+        return isinstance(value, bool) and isinstance(expected, bool) and value == expected
+    if value is None or expected is None:
+        return value is None and expected is None
+    if isinstance(value, (int, float)) and isinstance(expected, (int, float)):
+        return value == expected
+    if isinstance(value, dict) or isinstance(expected, dict):
+        return isinstance(value, dict) and isinstance(expected, dict) and value.keys() == expected.keys() and all(
+            _json_equal(item, expected[key]) for key, item in value.items()
+        )
+    if isinstance(value, list) or isinstance(expected, list):
+        return isinstance(value, list) and isinstance(expected, list) and len(value) == len(expected) and all(
+            _json_equal(item, other) for item, other in zip(value, expected)
+        )
+    return type(value) is type(expected) and value == expected
+
+
 def _pairs(rows: Any, variables: Mapping[str, Any]) -> list[tuple[str, str]]:
     if isinstance(rows, Mapping):
         rows = [{"key": key, "value": value} for key, value in rows.items()]
@@ -146,7 +189,7 @@ def _json_path(document: Any, path: str) -> Any:
     return value
 
 
-def _assertions(response: dict, assertions: Any) -> list[dict]:
+def _assertions(response: dict, assertions: Any, context: Mapping[str, Any]) -> list[dict]:
     results = []
     for assertion in assertions or []:
         kind = assertion.get("type", "") if isinstance(assertion, Mapping) else ""
@@ -154,19 +197,47 @@ def _assertions(response: dict, assertions: Any) -> list[dict]:
         passed = False
         message = ""
         try:
-            expected = assertion.get("expected")
+            if not isinstance(assertion, Mapping):
+                raise RequestError("Assertions must specify an assertion type.")
+            if "expected_variable" in assertion:
+                if "expected" in assertion:
+                    raise RequestError("Specify either 'expected' or 'expected_variable', not both.")
+                variable_name = assertion["expected_variable"]
+                if not isinstance(variable_name, str) or not variable_name.strip():
+                    raise RequestError("'expected_variable' must be a nonempty variable name.")
+                if variable_name not in context:
+                    raise RequestError(f"Expected variable '{variable_name}' is not defined.")
+                expected = context[variable_name]
+            else:
+                expected = _expected_value(assertion.get("expected"), context)
             if kind == "status":
-                expected = int(expected)
+                try:
+                    expected = int(expected)
+                except (ValueError, TypeError, OverflowError) as exc:
+                    raise RequestError("HTTP status assertions expect an integer.") from exc
                 passed = response["status"] == expected
                 message = f"Expected HTTP {expected}; received HTTP {response['status']}."
-            elif kind in ("json_equals", "json_exists"):
+            elif kind in ("json_equals", "json_exists", "json_greater_than", "json_length_equals"):
                 if not response.get("_json_valid", response.get("json") is not None):
                     raise RequestError("Response body is not valid JSON.")
                 value = _json_path(response["json"], assertion.get("path", "$"))
-                passed = kind == "json_exists" or value == expected
-                message = "JSON path exists." if kind == "json_exists" else (
-                    "JSON value matches." if passed else "JSON value does not match the expected value."
-                )
+                if kind == "json_greater_than":
+                    if isinstance(value, bool) or not isinstance(value, (int, float)) or isinstance(expected, bool) or not isinstance(expected, (int, float)):
+                        raise RequestError("'json_greater_than' requires numeric JSON and expected values.")
+                    passed = value > expected
+                    message = "JSON value exceeds the expected value." if passed else "JSON value does not exceed the expected value."
+                elif kind == "json_length_equals":
+                    if not isinstance(value, (str, list, dict)):
+                        raise RequestError("'json_length_equals' requires a JSON string, array, or object.")
+                    if isinstance(expected, bool) or not isinstance(expected, int) or expected < 0:
+                        raise RequestError("'json_length_equals' expects a nonnegative integer.")
+                    passed = len(value) == expected
+                    message = "JSON length matches." if passed else "JSON length does not match the expected value."
+                else:
+                    passed = kind == "json_exists" or _json_equal(value, expected)
+                    message = "JSON path exists." if kind == "json_exists" else (
+                        "JSON value matches." if passed else "JSON value does not match the expected value."
+                    )
             elif kind == "body_contains":
                 passed = _text(expected) in response["body"]
                 message = "Response contains the expected text." if passed else "Response does not contain the expected text."
@@ -176,7 +247,10 @@ def _assertions(response: dict, assertions: Any) -> list[dict]:
                 passed = value == _text(expected)
                 message = "Header value matches." if passed else f"Header '{header}' does not match the expected value."
             elif kind == "time_below":
-                limit = float(expected)
+                try:
+                    limit = float(expected)
+                except (ValueError, TypeError, OverflowError) as exc:
+                    raise RequestError("Time assertions expect a number of milliseconds.") from exc
                 passed = response["elapsed_ms"] < limit
                 message = f"Expected less than {limit:g} ms; received {response['elapsed_ms']:.1f} ms."
             else:
@@ -228,22 +302,27 @@ def _read_response(stream, deadline: float) -> tuple[bytes, bool]:
     return body[:MAX_RESPONSE_BYTES], size > MAX_RESPONSE_BYTES
 
 
-def run_request(request, environment, variables=None, globals=None) -> dict:
+def run_request(request, environment, variables=None, globals=None, *, _dynamic_context=None) -> dict:
     """Execute one request and evaluate its assertions and required extractions.
 
     Variable precedence is globals, environment variables, environment built-ins
-    (base_url/api_key), then runtime variables. An explicit status assertion can
-    make an expected non-2xx response successful; otherwise success requires 2xx.
+    (base_url/api_key), then runtime variables. Generated run variables are
+    reserved and take precedence over all user values. An explicit status
+    assertion can make an expected non-2xx response successful; otherwise
+    success requires 2xx.
     """
     response = _base_response()
     started = time.monotonic()
     json_valid = False
+    context = {}
+    dynamic_context = _run_variables() if _dynamic_context is None else _dynamic_context
     try:
         environment = environment or {}
         context = _variable_map(globals)
         context.update(_variable_map(environment.get("variables")))
         context.update({"base_url": environment.get("base_url", ""), "api_key": environment.get("api_key", "")})
         context.update(_variable_map(variables))
+        context.update({name: dynamic_context[name] for name in _RESERVED_VARIABLES})
         method = str(request.get("method", "GET")).upper().strip()
         if not re.fullmatch(r"[A-Z][A-Z0-9!#$%&'*+.^_`|~-]*", method):
             raise RequestError("HTTP method is invalid.")
@@ -374,7 +453,7 @@ def run_request(request, environment, variables=None, globals=None) -> dict:
         response["error"] = str(exc)
     response["elapsed_ms"] = round((time.monotonic() - started) * 1000, 2)
     response["_json_valid"] = json_valid
-    response["assertions"] = _assertions(response, request.get("assertions"))
+    response["assertions"] = _assertions(response, request.get("assertions"), context)
     response.pop("_json_valid", None)
     for extraction in request.get("extract") or []:
         try:
@@ -401,7 +480,8 @@ def run_sequence(sequence, requests, environment, variables=None, globals=None, 
     An optional progress observer receives an independent snapshot after each
     completed step. Observer errors cannot interrupt request execution.
     """
-    result = {"ok": True, "steps": [], "variables": {}, "error": None, "cancelled": False}
+    dynamic_context = _run_variables()
+    result = {"ok": True, "steps": [], "variables": {}, "run_variables": dynamic_context.copy(), "error": None, "cancelled": False}
     lookup = requests if isinstance(requests, Mapping) else {request["id"]: request for request in requests}
     runtime = _variable_map(variables)
     for step in sequence.get("steps") or []:
@@ -414,7 +494,7 @@ def run_sequence(sequence, requests, environment, variables=None, globals=None, 
             result.update(ok=False, error=f"Sequence step refers to missing request '{request_id}'.")
             break
         step_variables = {**runtime, **result["variables"], **_variable_map(step.get("variables"))}
-        response = run_request(request, environment, step_variables, globals)
+        response = run_request(request, environment, step_variables, globals, _dynamic_context=dynamic_context)
         result["steps"].append({"request_id": request_id, "name": request.get("name", request_id), "response": response})
         result["variables"].update(response["extracted"])
         stop = False

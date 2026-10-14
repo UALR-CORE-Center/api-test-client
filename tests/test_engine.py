@@ -5,7 +5,10 @@ import json
 import threading
 import time
 import unittest
+import uuid
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 from api_test_client.engine import MAX_RESPONSE_BYTES, run_request, run_sequence
@@ -51,6 +54,8 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_body(201, {"id": 42, "items": [{"name": "first"}], "optional": None})
         elif path == "/null":
             self.send_body(200, None)
+        elif path == "/booleans":
+            self.send_body(200, {"true": True, "false": False, "nested": {"flags": [True, False]}})
         elif path == "/missing":
             self.send_body(404, {"error": "missing"})
         elif path == "/plain":
@@ -218,6 +223,147 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(result["extracted"], {"asset_id": 42})
         self.assertEqual(len(result["assertions"]), 6)
 
+    def test_generated_run_variables_are_reserved_and_ordinary_aliases_work(self):
+        now = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+        run_id = uuid.UUID("754bd79a-99c9-4a2b-a2d8-937088ab0454")
+        self.environment["variables"] = {
+            "run_id": "{{$uuid}}",
+            "$uuid": "environment-override",
+            "$timestamp": "environment-override",
+        }
+        request = self.request(params={
+            "id": "{{run_id}}",
+            "direct_id": "{{$uuid}}",
+            "now": "{{$timestamp}}",
+            "before": "{{$timestamp_minus_1h}}",
+        }, assertions=[{"type": "json_equals", "path": "$.query.id[0]", "expected": "{{run_id}}"}])
+        with patch("api_test_client.engine.datetime") as clock, patch("api_test_client.engine.uuid.uuid4", return_value=run_id) as generator:
+            clock.now.return_value = now
+            result = run_request(request, self.environment,
+                                 {"$uuid": "runtime-override", "$timestamp_minus_1h": "runtime-override"},
+                                 {"$uuid": "global-override"})
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["json"]["query"], {
+            "id": [str(run_id)], "direct_id": [str(run_id)],
+            "now": ["2026-01-02T03:04:05Z"], "before": ["2026-01-02T02:04:05Z"],
+        })
+        generator.assert_called_once_with()
+        clock.now.assert_called_once_with(timezone.utc)
+
+    def test_standalone_runs_generate_fresh_values(self):
+        first_time = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+        ids = [uuid.UUID("754bd79a-99c9-4a2b-a2d8-937088ab0454"), uuid.UUID("1dd82110-3485-4473-8bb3-388dc1fc98e9")]
+        with patch("api_test_client.engine.datetime") as clock, patch("api_test_client.engine.uuid.uuid4", side_effect=ids) as generator:
+            clock.now.side_effect = [first_time, first_time + timedelta(seconds=1)]
+            request = self.request(params={"id": "{{$uuid}}", "now": "{{$timestamp}}"})
+            first = run_request(request, self.environment)
+            second = run_request(request, self.environment)
+        self.assertEqual(first["json"]["query"]["id"], [str(ids[0])])
+        self.assertEqual(second["json"]["query"]["id"], [str(ids[1])])
+        self.assertNotEqual(first["json"]["query"]["now"], second["json"]["query"]["now"])
+        self.assertEqual(generator.call_count, 2)
+
+    def test_assertion_expected_templates_expand_recursively_without_type_coercion(self):
+        self.environment["variables"] = {"label": "first", "status": "201", "id": 42}
+        result = self.run_http(url="/created", assertions=[
+            {"type": "status", "expected": "{{status}}"},
+            {"type": "json_equals", "path": "$", "expected": {"id": 42, "items": [{"name": "{{label}}"}], "optional": None}},
+            {"type": "body_contains", "expected": "{{label}}"},
+        ])
+        self.assertTrue(result["ok"], result)
+        result = self.run_http(url="/created", assertions=[{"type": "json_equals", "path": "$.id", "expected": "{{id}}"}])
+        self.assertFalse(result["ok"])
+        self.assertIn("does not match", result["assertions"][0]["message"])
+
+    def test_assertion_unknown_template_fails_clearly(self):
+        result = self.run_http(url="/created", assertions=[{"type": "json_equals", "path": "$", "expected": {"items": [{"name": "{{unknown}}"}]}}])
+        self.assertFalse(result["ok"])
+        self.assertIn("Variable '{{unknown}}' is not defined", result["assertions"][0]["message"])
+
+    def test_assertion_expected_variable_preserves_json_types(self):
+        cases = [("$.id", 42), ("$.items", [{"name": "first"}]), ("$.optional", None)]
+        for path, value in cases:
+            with self.subTest(path=path):
+                result = run_request(self.request(url="/created", assertions=[{"type": "json_equals", "path": path, "expected_variable": "saved"}]), self.environment, {"saved": value})
+                self.assertTrue(result["ok"], result)
+
+    def test_json_equals_distinguishes_booleans_from_numbers(self):
+        for path, expected in [("$.true", 1), ("$.false", 0)]:
+            with self.subTest(path=path):
+                result = self.run_http(url="/booleans", assertions=[{"type": "json_equals", "path": path, "expected": expected}])
+                self.assertFalse(result["ok"])
+                self.assertIn("does not match", result["assertions"][0]["message"])
+        result = self.run_http(url="/booleans", assertions=[
+            {"type": "json_equals", "path": "$.true", "expected": True},
+            {"type": "json_equals", "path": "$.false", "expected": False},
+        ])
+        self.assertTrue(result["ok"], result)
+
+    def test_json_equals_expected_variable_compares_nested_types(self):
+        for expected in ({"flags": [1, False]}, {"flags": [True, 0]}, {"flags": {"0": True, "1": False}}, {"flags": [True, None]}):
+            with self.subTest(expected=expected):
+                request = self.request(url="/booleans", assertions=[{"type": "json_equals", "path": "$.nested", "expected_variable": "saved"}])
+                result = run_request(request, self.environment, {"saved": expected})
+                self.assertFalse(result["ok"])
+        result = run_request(request, self.environment, {"saved": {"flags": [True, False]}})
+        self.assertTrue(result["ok"], result)
+
+    def test_json_equals_keeps_numeric_equivalence_and_other_json_types_distinct(self):
+        result = self.run_http(url="/created", assertions=[{"type": "json_equals", "path": "$.id", "expected": 42.0}])
+        self.assertTrue(result["ok"], result)
+        for path, expected in [("$.id", "42"), ("$.optional", False), ("$.items", {"0": {"name": "first"}}), ("$", [])]:
+            with self.subTest(path=path, expected=expected):
+                result = self.run_http(url="/created", assertions=[{"type": "json_equals", "path": path, "expected": expected}])
+                self.assertFalse(result["ok"])
+
+    def test_assertion_expected_variable_rejects_missing_or_ambiguous_expectations(self):
+        for assertion, message in [
+            ({"type": "json_equals", "expected_variable": "unknown"}, "Expected variable 'unknown' is not defined"),
+            ({"type": "json_equals", "expected_variable": "saved", "expected": None}, "not both"),
+            ({"type": "json_equals", "expected_variable": {}}, "nonempty variable name"),
+        ]:
+            with self.subTest(assertion=assertion):
+                result = self.run_http(url="/created", assertions=[assertion])
+                self.assertFalse(result["ok"])
+                self.assertIn(message, result["assertions"][0]["message"])
+
+    def test_assertion_numeric_conversion_errors_do_not_expose_variable_values(self):
+        self.environment["api_key"] = "private-expectation-value"
+        for kind in ("status", "time_below"):
+            with self.subTest(kind=kind):
+                result = self.run_http(assertions=[{"type": kind, "expected": "{{api_key}}"}])
+                self.assertFalse(result["ok"])
+                self.assertNotIn(self.environment["api_key"], result["assertions"][0]["message"])
+
+    def test_json_greater_than_and_length_equals(self):
+        result = self.run_http(url="/created", assertions=[
+            {"type": "json_greater_than", "path": "$.id", "expected": 0},
+            {"type": "json_length_equals", "path": "$.items", "expected": 1},
+            {"type": "json_length_equals", "path": "$.items[0].name", "expected": 5},
+            {"type": "json_length_equals", "path": "$", "expected": 3},
+        ])
+        self.assertTrue(result["ok"], result)
+        for assertion in [
+            {"type": "json_greater_than", "path": "$.id", "expected": 42},
+            {"type": "json_length_equals", "path": "$.items", "expected": 0},
+        ]:
+            self.assertFalse(self.run_http(url="/created", assertions=[assertion])["ok"])
+
+    def test_json_numeric_and_length_comparisons_reject_invalid_types(self):
+        for assertion in [
+            {"type": "json_greater_than", "path": "$.id", "expected": True},
+            {"type": "json_greater_than", "path": "$.id", "expected": "0"},
+            {"type": "json_greater_than", "path": "$.items", "expected": 0},
+            {"type": "json_length_equals", "path": "$.id", "expected": 2},
+            {"type": "json_length_equals", "path": "$.items", "expected": True},
+            {"type": "json_length_equals", "path": "$.items", "expected": -1},
+            {"type": "json_length_equals", "path": "$.items", "expected": 1.0},
+        ]:
+            with self.subTest(assertion=assertion):
+                result = self.run_http(url="/created", assertions=[assertion])
+                self.assertFalse(result["ok"])
+                self.assertIn("requires" if assertion["type"] == "json_greater_than" or assertion["path"] == "$.id" else "expects", result["assertions"][0]["message"])
+
     def test_json_null_root_is_valid_for_multiple_assertions(self):
         result = self.run_http(url="/null", assertions=[{"type": "json_exists", "path": "$"}, {"type": "json_equals", "path": "$", "expected": None}], extract=[{"name": "null_value", "path": "$"}])
         self.assertTrue(result["ok"], result)
@@ -317,6 +463,35 @@ class EngineTests(unittest.TestCase):
         self.assertTrue(result["ok"], result)
         self.assertEqual(result["variables"], {"asset_id": 42})
         self.assertEqual(result["steps"][1]["response"]["json"]["query"], {"name": ["step"]})
+
+    def test_sequence_generated_variables_are_stable_for_replay_and_fresh_next_run(self):
+        first_time = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+        ids = [uuid.UUID("754bd79a-99c9-4a2b-a2d8-937088ab0454"), uuid.UUID("1dd82110-3485-4473-8bb3-388dc1fc98e9")]
+        self.environment["variables"] = {"run_id": "{{$uuid}}", "$uuid": "environment-override"}
+        requests = [
+            self.request(id="initial", method="POST", body_type="json",
+                         body='{"scan_id":"{{run_id}}-initial","scan_time":"{{$timestamp}}","older_time":"{{$timestamp_minus_1h}}"}',
+                         extract=[{"name": "initial_response", "path": "$"}]),
+            self.request(id="replay", method="POST", body_type="json",
+                         body='{"scan_id":"{{run_id}}-initial","scan_time":"{{$timestamp}}","older_time":"{{$timestamp_minus_1h}}"}',
+                         assertions=[{"type": "json_equals", "path": "$", "expected_variable": "initial_response"}]),
+        ]
+        sequence = {"steps": [{"request_id": "initial"}, {"request_id": "replay", "variables": {"$uuid": "step-override", "$timestamp": "step-override"}}]}
+        with patch("api_test_client.engine.datetime") as clock, patch("api_test_client.engine.uuid.uuid4", side_effect=ids) as generator:
+            clock.now.side_effect = [first_time, first_time + timedelta(seconds=1)]
+            first = run_sequence(sequence, requests, self.environment, {"$uuid": "runtime-override", "secret": "private"}, {"$uuid": "global-override"})
+            second = run_sequence(sequence, requests, self.environment)
+        self.assertTrue(first["ok"], first)
+        self.assertTrue(second["ok"], second)
+        self.assertEqual(generator.call_count, 2)
+        self.assertEqual(clock.now.call_count, 2)
+        self.assertEqual(first["run_variables"], {"$uuid": str(ids[0]), "$timestamp": "2026-01-02T03:04:05Z", "$timestamp_minus_1h": "2026-01-02T02:04:05Z"})
+        self.assertEqual(second["run_variables"]["$uuid"], str(ids[1]))
+        self.assertNotEqual(first["run_variables"], second["run_variables"])
+        payload = json.loads(first["steps"][0]["response"]["json"]["body"])
+        self.assertEqual(payload["scan_id"], f"{ids[0]}-initial")
+        self.assertEqual(first["steps"][0]["response"]["json"], first["steps"][1]["response"]["json"])
+        self.assertNotIn("secret", first["run_variables"])
 
     def test_sequence_stop_on_failure_and_continue_mode(self):
         requests = [self.request(id="bad", url="/missing"), self.request(id="good")]

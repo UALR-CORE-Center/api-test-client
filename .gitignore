@@ -5,6 +5,8 @@
 /workspace.json
 /workspace*.json
 *.local.json
+*.private.json
+/local-tests/
 *.pem
 *.key
 /reports/

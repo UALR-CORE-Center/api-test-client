@@ -1,0 +1,5 @@
+{
+  "message": "{{message}}",
+  "run_id": "{{run_id}}",
+  "sent_at": "{{sent_at}}"
+}

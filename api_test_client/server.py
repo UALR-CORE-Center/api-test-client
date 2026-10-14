@@ -75,7 +75,7 @@ class ClientServer(ThreadingHTTPServer):
 
 
 class ClientHandler(BaseHTTPRequestHandler):
-    server_version = "API-Test-Client/0.1"
+    server_version = "API-Test-Client/0.2"
 
     def setup(self):
         super().setup()
