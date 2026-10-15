@@ -1402,6 +1402,126 @@ main {
   background:#fbf2ee;
 }
 
+.run-actions {
+  display:flex;
+  flex-wrap:wrap;
+  justify-content:flex-end;
+  gap:7px;
+}
+
+.sequence-results .section-topline {
+  gap:12px;
+}
+
+.sequence-run-item {
+  border-bottom:1px solid #e4ebe3;
+}
+
+.sequence-run-item:last-child {
+  border-bottom:none;
+}
+
+.sequence-run-item.selected {
+  box-shadow:inset 3px 0 var(--teal);
+  background:#f3f9f4;
+}
+
+.sequence-run-item .sequence-run-row {
+  border-bottom:none;
+  background:transparent;
+}
+
+.sequence-run-row strong {
+  min-width:0;
+  overflow-wrap:anywhere;
+}
+
+.sequence-run-row .metric-status {
+  max-width:260px;
+  overflow-wrap:anywhere;
+  line-height:1.5;
+}
+
+.sequence-run-row .test-icon.failed {
+  color:#b64242;
+  background:#f8e9e6;
+}
+
+.inspect-response {
+  color:var(--teal);
+  font-size:10px;
+  font-weight:600;
+  white-space:nowrap;
+}
+
+.sequence-run-error {
+  padding:12px 17px;
+  font-size:12px;
+  color:#9e4338;
+  background:#fcf0eb;
+  border-bottom:1px solid #f1d9cf;
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+}
+
+.sequence-run-empty {
+  padding:15px 17px;
+  font-size:11px;
+  color:#7a8f80;
+}
+
+.step-failure-details {
+  padding:0 17px 16px 50px;
+  color:#8c4d42;
+  font-size:11px;
+  overflow-wrap:anywhere;
+}
+
+.step-error {
+  white-space:pre-wrap;
+}
+
+.step-assertion-failures {
+  margin:8px 0 0;
+  padding-left:17px;
+}
+
+.step-assertion-failures li+li {
+  margin-top:7px;
+}
+
+.step-assertion-failures strong,.step-assertion-failures span {
+  display:block;
+  white-space:pre-wrap;
+}
+
+.step-assertion-failures span {
+  margin-top:2px;
+  color:#7d7367;
+}
+
+.sequence-body-preview {
+  margin-top:12px;
+  color:#7d8174;
+}
+
+.sequence-body-preview>span {
+  font-size:10px;
+}
+
+.sequence-body-preview pre {
+  margin-top:5px;
+  padding:9px 11px;
+  max-height:150px;
+  overflow:auto;
+  border:1px solid #e8e5da;
+  border-radius:5px;
+  background:#fbfaf6;
+  font:10px/1.7 var(--mono);
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+}
+
 .loading-state {
   display:flex;
   justify-content:center;
@@ -2013,6 +2133,31 @@ main {
   .sequence-run-row {
     gap:8px;
     padding:11px 13px;
+    flex-wrap:wrap;
+  }
+  .sequence-results .section-topline {
+    align-items:flex-start;
+    flex-wrap:wrap;
+  }
+  .run-actions {
+    margin-left:auto;
+    gap:5px;
+  }
+  .sequence-run-row strong {
+    flex-basis:calc(100% - 45px);
+  }
+  .sequence-run-row .metric-status {
+    margin-left:29px;
+    max-width:calc(100% - 29px);
+  }
+  .sequence-run-row .step-time {
+    min-width:auto;
+  }
+  .inspect-response {
+    margin-left:auto;
+  }
+  .step-failure-details {
+    padding:0 13px 13px 42px;
   }
   .response-table th,.response-table td {
     padding:8px 6px;

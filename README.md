@@ -207,6 +207,19 @@ it to later requests. See the [configuration example](docs/configuration.md#reso
 Cancellation takes effect between requests; an in-flight request must
 finish or time out before the run stops.
 
+After a run, the sequence results show each failed step's error, failed
+assertions, HTTP status, and a response-body preview. The first failed step
+opens automatically. Select **Inspect response** on any step to view its full
+body, headers, tests, and extracted values. The summary counts passing, failing,
+and skipped steps, so a later success does not hide an earlier failure.
+
+Use **Download run log** to save the current run's JSON report, including step
+responses and assertion results. Known credentials are redacted using the
+settings captured when the run started. Download the log before reloading or
+closing the page, which clears its displayed results. Run records are kept in
+the local server's memory and are cleared when the app restarts. The server keeps
+up to 50 recent runs and may remove older completed runs as new ones start.
+
 ## Command-line runs
 
 Run a saved sequence by its ID or name:

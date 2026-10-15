@@ -182,48 +182,99 @@ class WorkspaceStore:
 
 
 def _known_secrets(workspace):
+    # Use the request engine's interpolation rules, including JSON modifiers,
+    # so redaction recognizes the credentials that were actually transmitted.
+    from .engine import _interpolate
+
     secrets = set()
+
     def variables(rows):
+        if isinstance(rows, dict):
+            return rows
         return {row.get("key", ""): row.get("value", "") for row in rows if isinstance(row, dict) and row.get("enabled", True)}
+
     global_variables = variables(workspace.get("variables", []))
-    global_variables.update(variables(workspace.get("runtime", [])))
-    contexts = [global_variables]
-    for environment in workspace.get("environments", []):
-        contexts.append({**global_variables, **variables(environment.get("variables", [])),
-                         "base_url": environment.get("base_url", ""), "api_key": environment.get("api_key", "")})
-    def resolve(text, context):
-        for _ in range(20):
-            replaced = re.sub(r"\{\{\s*([^{}]+?)\s*\}\}", lambda m: str(context.get(m.group(1).strip(), m.group(0))), text)
-            if replaced == text:
-                break
-            text = replaced
-        return text
-    def visit(value):
+    runtime = variables(workspace.get("runtime", []))
+    environments = workspace.get("environments", [])
+    environment_contexts = [(environment, {
+        **global_variables, **variables(environment.get("variables", [])),
+        "base_url": environment.get("base_url", ""), "api_key": environment.get("api_key", ""),
+        **runtime,
+    }) for environment in environments]
+    contexts = [{**global_variables, **runtime}] + [context for _, context in environment_contexts]
+    secret_names = {row.get("key") for rows in [workspace.get("variables", []), workspace.get("runtime", [])] +
+                    [environment.get("variables", []) for environment in environments]
+                    for row in rows if isinstance(row, dict) and
+                    (row.get("secret") or SECRET_NAME.search(str(row.get("key", ""))))}
+    secret_names.add("api_key")
+
+    def remember(value, context):
+        try:
+            resolved = _interpolate(value, context)
+        except (ValueError, TypeError, RecursionError):
+            return  # Missing/cyclic variables cannot produce a sent credential.
+        if resolved and "{{" not in resolved:
+            secrets.add(resolved)
+
+    def remember_overrides(context):
+        for name in secret_names:
+            if name in context:
+                remember(context[name], context)
+
+    def visit(value, contexts):
         if isinstance(value, list):
             for item in value:
-                visit(item)
+                visit(item, contexts)
         elif isinstance(value, dict):
             if value.get("secret") or SECRET_NAME.search(str(value.get("key", ""))):
-                if isinstance(value.get("value"), str) and value["value"] and "{{" not in value["value"]:
-                    secrets.add(value["value"])
+                for context in contexts:
+                    remember(value.get("value", ""), context)
             for key, item in value.items():
-                if SECRET_NAME.search(key) and isinstance(item, str) and item and "{{" not in item:
-                    secrets.add(item)
+                if SECRET_NAME.search(str(key)) and isinstance(item, str):
+                    for context in contexts:
+                        remember(item, context)
                 if key == "auth" and isinstance(item, dict):
                     for field in ("token", "value", "password"):
                         if item.get(field):
                             for context in contexts:
-                                credential = resolve(str(item[field]), context)
-                                if credential and "{{" not in credential:
-                                    secrets.add(credential)
+                                remember(item[field], context)
                     if item.get("type") == "basic":
                         for context in contexts:
-                            username = resolve(item.get("username", ""), context)
-                            password = resolve(item.get("password", ""), context)
+                            try:
+                                username = _interpolate(item.get("username", ""), context)
+                                password = _interpolate(item.get("password", ""), context)
+                            except (ValueError, TypeError, RecursionError):
+                                continue
                             if password and "{{" not in username + password:
                                 secrets.add(base64.b64encode(f"{username}:{password}".encode()).decode())
-                visit(item)
-    visit(workspace)
+                visit(item, contexts)
+
+    visit(workspace, contexts)
+    for context in contexts:
+        remember_overrides(context)
+
+    # A run freezes its selected environment and inline sequence. Otherwise,
+    # consider saved sequence overrides when preparing a portable workspace.
+    selected_environment = workspace.get("run_environment")
+    if isinstance(selected_environment, dict):
+        environment_contexts = [(selected_environment, {
+            **global_variables, **variables(selected_environment.get("variables", [])),
+            "base_url": selected_environment.get("base_url", ""),
+            "api_key": selected_environment.get("api_key", ""), **runtime,
+        })]
+    elif not environment_contexts:
+        environment_contexts = [({}, contexts[0])]
+    inline_sequence = workspace.get("run_sequence")
+    sequences = [inline_sequence] if isinstance(inline_sequence, dict) else workspace.get("sequences", [])
+    requests = {request.get("id"): request for request in workspace.get("requests", [])}
+    for sequence in sequences:
+        for step in sequence.get("steps", []):
+            for environment, context in environment_contexts:
+                effective = {**context, **variables(step.get("variables", {}))}
+                remember_overrides(effective)
+                visit(step, [effective])
+                visit(requests.get(step.get("request_id"), {}), [effective])
+                visit({"auth": environment.get("auth", {})}, [effective])
     return sorted(secrets, key=len, reverse=True)
 
 

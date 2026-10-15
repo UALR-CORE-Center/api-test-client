@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "api-test-client"
-version = "0.3.0"
+version = "0.3.1"
 description = "A lightweight local API client with environments, endpoint tests, and request sequences."
 readme = "README.md"
 requires-python = ">=3.11"

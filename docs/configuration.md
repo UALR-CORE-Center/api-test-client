@@ -266,6 +266,12 @@ steps and the JSON interpolation modifier.
 
 ## Terminal runs and reload behavior
 
+For frontend runs, the **Sequence run** panel displays failure details for each
+step. Select **Inspect response** for the complete response and **Download run
+log** to save a JSON report with recognized credentials masked. The first failed
+step is selected automatically when a run finishes. Download a report before
+reloading or closing the page. Restarting the server clears its run history.
+
 Start without opening a browser:
 
 ```sh

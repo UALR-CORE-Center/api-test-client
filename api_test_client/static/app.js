@@ -8,10 +8,13 @@ const escapeHTML = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => 
 const state = {workspace: null, token: "", kind: "request", draft: null, dirty: false, requestTab: "params", responseTab: "body", search: "", activeRequests: new Map(), startingSequences: new Set(), responses: new Map(), runs: new Map(), environmentDraft: null, variablesDraft: [], busy: false};
 
 function toast(message, error = false) {
+  const region = $("toast-region");
+  for (const existing of Array.from(region.children)) if (existing.textContent === message) existing.remove();
+  while (region.children.length >= 2) region.firstElementChild.remove();
   const node = document.createElement("div");
   node.className = `toast${error ? " error" : ""}`;
   node.textContent = message;
-  $("toast-region").append(node);
+  region.append(node);
   setTimeout(() => node.remove(), error ? 8000 : 4000);
 }
 
@@ -142,9 +145,16 @@ function renderCounts() {
   }
 }
 
-function setTab(group, tab) {
+function setTab(group, tab, manual = false) {
   const prefix = group === "request" ? "" : "response-";
   state[group === "request" ? "requestTab" : "responseTab"] = tab;
+  if (group === "response" && state.kind === "sequence") {
+    const run = state.runs.get(state.draft.id);
+    if (run && run.selectedIndex != null) {
+      run.responseTab = tab;
+      if (manual) run.selectionManual = true;
+    }
+  }
   $(`${group}-tabs`).querySelectorAll('[role="tab"]').forEach((button) => {
     const active = button.dataset.tab === tab;
     button.setAttribute("aria-selected", String(active));
@@ -157,7 +167,7 @@ function bindTabs(group) {
   const tablist = $(`${group}-tabs`);
   tablist.addEventListener("click", (event) => {
     const button = event.target.closest('[role="tab"]');
-    if (button) setTab(group, button.dataset.tab);
+    if (button) setTab(group, button.dataset.tab, true);
   });
   tablist.addEventListener("keydown", (event) => {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key) || !event.target.matches('[role="tab"]')) return;
@@ -165,7 +175,7 @@ function bindTabs(group) {
     const tabs = Array.from(tablist.querySelectorAll('[role="tab"]'));
     const index = tabs.indexOf(event.target);
     const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
-    setTab(group, tabs[next].dataset.tab);
+    setTab(group, tabs[next].dataset.tab, true);
     tabs[next].focus();
   });
 }
@@ -229,6 +239,7 @@ function renderEditor() {
     renderSteps();
   }
   renderExecution();
+  if (!requestMode) state.responseTab = state.runs.get(state.draft.id)?.responseTab || "body";
   renderResponse(state.responses.get(`${state.kind}:${state.draft.id}`));
   if (requestMode && state.activeRequests.has(state.draft.id)) renderPendingResponse(state.activeRequests.get(state.draft.id));
   renderSequenceResults();
@@ -302,7 +313,7 @@ async function deleteItem() {
   const collection = kind === "request" ? "requests" : "sequences";
   const references = kind === "request" ? state.workspace.sequences.filter((sequence) => sequence.steps.some((step) => step.request_id === id)) : [];
   if (references.length) throw new Error(`This request is used by ${references.map((sequence) => sequence.name).join(", ")}. Remove it from those sequences before deleting it.`);
-  if (state.runs.get(id)?.state === "running") throw new Error("Cancel the running sequence before deleting it.");
+  if (state.startingSequences.has(id) || ["starting", "running"].includes(state.runs.get(id)?.state)) throw new Error("Wait for the sequence to start, then cancel its run before deleting it.");
   if (!window.confirm(`Delete “${state.draft.name}”? This removes it from your workspace.`)) return;
   const workspace = clone(state.workspace);
   workspace[collection] = workspace[collection].filter((item) => item.id !== id);
@@ -415,23 +426,67 @@ function renderSteps() {
 
 async function runSequence() {
   if (state.kind !== "sequence" || state.startingSequences.has(state.draft.id) || state.runs.get(state.draft.id)?.state === "running") return;
-  const sequence = readDraft();
-  if (!sequence.steps.length) throw new Error("Add at least one request to the sequence first.");
-  const variables = parseJSON($("runtime-variables").value, "Run variables", "object");
-  state.startingSequences.add(sequence.id);
-  renderExecution();
-  let run_id;
-  try { ({run_id} = await api("/api/sequences/run", {method: "POST", body: JSON.stringify({sequence, environment_id: state.workspace.active_environment_id || null, variables})})); }
-  finally { state.startingSequences.delete(sequence.id); renderExecution(); }
-  const run = {id: run_id, state: "running", result: null, sequence};
-  state.runs.set(sequence.id, run);
-  state.responses.delete(`sequence:${sequence.id}`);
-  if (state.kind === "sequence" && state.draft.id === sequence.id) {
-    renderExecution();
+  let sequence;
+  let variables;
+  try {
+    sequence = readDraft();
+    if (!sequence.steps.length) throw new Error("Add at least one request to the sequence first.");
+    variables = parseJSON($("runtime-variables").value, "Run variables", "object");
+  } catch (error) {
+    state.runs.set(state.draft.id, {id: null, state: "completed", sequence: clone(state.draft), result: {ok: false, steps: [], error: error.message}, selectedIndex: null});
+    state.responses.delete(`sequence:${state.draft.id}`);
     renderSequenceResults();
     renderResponse(null);
+    throw error;
   }
-  pollSequence(sequence.id, run_id);
+  const run = {id: null, state: "starting", result: null, sequence, selectedIndex: null, selectionManual: false, responseTab: "body", pollError: null};
+  state.runs.set(sequence.id, run);
+  state.responses.delete(`sequence:${sequence.id}`);
+  state.startingSequences.add(sequence.id);
+  renderExecution();
+  renderSequenceResults();
+  renderResponse(null);
+  try {
+    const {run_id} = await api("/api/sequences/run", {method: "POST", body: JSON.stringify({sequence, environment_id: state.workspace.active_environment_id || null, variables})});
+    run.id = run_id;
+    run.state = "running";
+    pollSequence(sequence.id, run_id);
+  } catch (error) {
+    run.state = "completed";
+    run.result = {ok: false, steps: [], error: `Could not start the sequence: ${error.message}`};
+    throw error;
+  } finally {
+    state.startingSequences.delete(sequence.id);
+    if (state.kind === "sequence" && state.draft.id === sequence.id) { renderExecution(); renderSequenceResults(); }
+  }
+}
+
+function preferredResponseTab(response) {
+  return response?.assertions?.some((test) => !test.passed) ? "tests" : "body";
+}
+
+function selectRunResponse(sequenceId, run, index, manual = false) {
+  const response = run.result?.steps?.[index]?.response;
+  if (!response) return;
+  if (run.selectedIndex !== index || manual || !run.responseTab) run.responseTab = preferredResponseTab(response);
+  run.selectedIndex = index;
+  if (manual) run.selectionManual = true;
+  state.responses.set(`sequence:${sequenceId}`, response);
+  if (state.kind === "sequence" && state.draft.id === sequenceId) {
+    state.responseTab = run.responseTab;
+    renderResponse(response);
+  }
+}
+
+function updateRunResponse(sequenceId, run) {
+  const steps = run.result?.steps || [];
+  if (!steps.length) return;
+  if (run.selectionManual && steps[run.selectedIndex]) {
+    selectRunResponse(sequenceId, run, run.selectedIndex);
+    return;
+  }
+  const failed = steps.findIndex((step) => !step.response?.ok);
+  selectRunResponse(sequenceId, run, failed >= 0 ? failed : steps.length - 1);
 }
 
 async function pollSequence(sequenceId, runId) {
@@ -440,47 +495,119 @@ async function pollSequence(sequenceId, runId) {
     const run = state.runs.get(sequenceId);
     if (!run || run.id !== runId) return;
     run.state = data.state;
-    run.result = data.result;
+    run.pollError = null;
+    if (data.result) run.result = data.result;
+    if (data.state !== "running" && !run.result) run.result = {ok: false, steps: [], error: "The server finished the run without returning any results."};
+    updateRunResponse(sequenceId, run);
     if (state.kind === "sequence" && state.draft.id === sequenceId) { renderExecution(); renderSequenceResults(); }
     if (data.state === "running") setTimeout(() => pollSequence(sequenceId, runId), 650);
     else {
-      if (data.result?.steps?.length) {
-        const response = data.result.steps[data.result.steps.length - 1].response;
-        state.responses.set(`sequence:${sequenceId}`, response);
-        if (state.kind === "sequence" && state.draft.id === sequenceId) renderResponse(response);
-      }
-      toast(data.result?.cancelled ? "Sequence cancelled." : data.result?.ok ? "Sequence completed. All checks passed." : "Sequence completed with failures.", !data.result?.ok && !data.result?.cancelled);
+      const failed = run.result.steps.filter((step) => !step.response?.ok).length;
+      toast(run.result.cancelled ? "Sequence cancelled." : run.result.ok ? `Sequence completed. ${run.result.steps.length} steps passed.` : failed ? `Sequence failed: ${failed} failed step${failed === 1 ? "" : "s"}. See run details.` : run.result.error || "The sequence finished without running any requests.", !run.result.ok && !run.result.cancelled);
     }
   } catch (error) {
     const run = state.runs.get(sequenceId);
-    if (run) { run.state = "completed"; run.result = {ok: false, error: error.message, steps: []}; }
+    if (!run || run.id !== runId) return;
+    run.pollError = `Could not refresh the run status: ${error.message} Last received results are shown below. Retry status to check whether execution has finished.`;
     if (state.kind === "sequence" && state.draft.id === sequenceId) { renderExecution(); renderSequenceResults(); }
     toast(`Could not fetch sequence result: ${error.message}`, true);
   }
+}
+
+function appendText(parent, tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  node.textContent = text;
+  parent.append(node);
+  return node;
+}
+
+function renderStepFailure(parent, response) {
+  const details = document.createElement("div");
+  details.className = "step-failure-details";
+  const assertions = response.assertions || [];
+  const failed = assertions.filter((test) => !test.passed);
+  const message = response.error || (failed.length ? `${assertions.length - failed.length}/${assertions.length} assertions passed.` : response.status ? `The server returned HTTP ${response.status} ${response.reason || ""}.`.trim() : "The request failed before receiving an HTTP response.");
+  appendText(details, "p", "step-error", message);
+  if (failed.length) {
+    const list = document.createElement("ul");
+    list.className = "step-assertion-failures";
+    for (const test of failed) {
+      const item = document.createElement("li");
+      appendText(item, "strong", "", test.name || "Assertion");
+      if (test.message) appendText(item, "span", "", test.message);
+      list.append(item);
+    }
+    details.append(list);
+  }
+  if (response.body || response.json != null) {
+    const preview = document.createElement("div");
+    preview.className = "sequence-body-preview";
+    const limit = 600;
+    // The engine already supplies a text body. Slice large bodies before any
+    // pretty printing so repeated progress snapshots stay cheap to render.
+    const rawBody = typeof response.body === "string" ? response.body : "";
+    const body = rawBody.length > limit ? rawBody : responseBody(response);
+    appendText(preview, "span", "", "Response body preview");
+    appendText(preview, "pre", "", body.length > limit ? `${body.slice(0, limit)}\n… Preview truncated. Inspect the response for the full body.` : body);
+    details.append(preview);
+  }
+  parent.append(details);
 }
 
 function renderSequenceResults() {
   const run = state.kind === "sequence" ? state.runs.get(state.draft.id) : null;
   $("sequence-results").hidden = !run;
   if (!run) return;
-  const running = run.state === "running";
+  const running = run.state === "running" || run.state === "starting";
   const result = run.result;
-  $("sequence-run-state").textContent = running ? "Running…" : result?.cancelled ? "Cancelled" : result?.ok ? "Passed" : "Failed";
-  $("cancel-sequence").hidden = !running;
-  const output = $("sequence-run-output");
   const steps = result?.steps || [];
-  output.innerHTML = steps.map((step, index) => `<button type="button" class="sequence-run-row" data-result-index="${index}"><span class="test-icon${step.response?.ok ? "" : " failed"}" style="${step.response?.ok ? "" : "color:#b64242;background:#f8e9e6"}">${step.response?.ok ? "✓" : "×"}</span><strong>${index + 1}. ${escapeHTML(step.name || "Request")}</strong><span class="metric-status${step.response?.ok ? "" : " error"}">${escapeHTML(step.response?.status || "Error")}</span><span class="step-time">${step.response?.elapsed_ms != null ? `${Number(step.response.elapsed_ms).toFixed(0)} ms` : ""}</span></button>`).join("");
-  const summary = document.createElement("div");
-  summary.className = `sequence-result-summary${result?.error ? " error" : ""}`;
-  summary.textContent = running ? steps.length ? `${steps.length} of ${run.sequence.steps.length} steps finished. Running the next request…` : "Starting sequence. Results will appear as steps finish…" : result?.error || `${steps.length} of ${run.sequence.steps.length} steps ran.${result?.cancelled ? " The run was cancelled." : " Select a step to inspect its response."}`;
-  output.append(summary);
+  const passed = steps.filter((step) => step.response?.ok).length;
+  const failed = steps.length - passed;
+  const remaining = Math.max(0, run.sequence.steps.length - steps.length);
+  $("sequence-run-state").textContent = run.pollError ? "Status unavailable" : running ? run.state === "starting" ? "Starting…" : "Running…" : result?.cancelled ? "Cancelled" : result?.ok && steps.length ? "Passed" : "Failed";
+  $("cancel-sequence").hidden = run.state !== "running" || !run.id;
+  $("download-run-log").hidden = !run.id || !result;
+  $("retry-run-status").hidden = !run.pollError || !run.id;
+  const output = $("sequence-run-output");
+  const focusedIndex = output.contains(document.activeElement) ? document.activeElement?.dataset.resultIndex : null;
+  output.replaceChildren();
+  appendText(output, "div", `sequence-result-summary${failed || result?.error || run.pollError ? " error" : ""}`, `${passed} passed · ${failed} failed · ${running ? `0 skipped · ${remaining} pending` : `${remaining} skipped`} (${steps.length}/${run.sequence.steps.length} steps executed)`);
+  if (result?.error) appendText(output, "p", "sequence-run-error", result.error);
+  if (run.pollError) appendText(output, "p", "sequence-run-error", run.pollError);
+  if (!steps.length) appendText(output, "p", "sequence-run-empty", running ? "No results yet. Completed steps will appear here." : "No requests ran. Review the error above and the sequence configuration.");
+  for (const [index, step] of steps.entries()) {
+    const response = step.response || {};
+    const item = document.createElement("article");
+    item.className = `sequence-run-item${response.ok ? "" : " failed"}${run.selectedIndex === index ? " selected" : ""}`;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "sequence-run-row";
+    button.dataset.resultIndex = index;
+    button.setAttribute("aria-pressed", String(run.selectedIndex === index));
+    button.setAttribute("aria-label", `Inspect response for step ${index + 1}: ${step.name || "Request"}`);
+    appendText(button, "span", `test-icon${response.ok ? "" : " failed"}`, response.ok ? "✓" : "×");
+    appendText(button, "strong", "", `${index + 1}. ${step.name || "Request"}`);
+    appendText(button, "span", `metric-status${response.ok ? "" : " error"}`, response.status ? `HTTP ${response.status} ${response.reason || ""}`.trim() : "No HTTP response");
+    if (response.elapsed_ms != null) appendText(button, "span", "step-time", `${Number(response.elapsed_ms).toFixed(0)} ms`);
+    appendText(button, "span", "inspect-response", "Inspect response →");
+    item.append(button);
+    if (!response.ok) renderStepFailure(item, response);
+    output.append(item);
+  }
+  if (focusedIndex != null) output.querySelector(`[data-result-index="${focusedIndex}"]`)?.focus({preventScroll: true});
 }
 
 async function cancelSequence() {
-  const run = state.runs.get(state.draft.id);
+  const sequenceId = state.draft.id;
+  const run = state.runs.get(sequenceId);
   if (!run || run.state !== "running") return;
   $("cancel-sequence").disabled = true;
-  try { await api(`/api/runs/${encodeURIComponent(run.id)}/cancel`, {method: "POST"}); toast("Cancellation requested."); }
+  try {
+    await api(`/api/runs/${encodeURIComponent(run.id)}/cancel`, {method: "POST"});
+    toast("Cancellation requested.");
+    if (run.pollError) pollSequence(sequenceId, run.id);
+  }
   finally { $("cancel-sequence").disabled = false; }
 }
 
@@ -544,14 +671,29 @@ async function saveGlobals(event) {
   toast("Global variables saved.");
 }
 
-async function exportWorkspace() {
-  const data = await api("/api/export");
+function downloadJSON(data, filename) {
   const blob = new Blob([JSON.stringify(data, null, 2) + "\n"], {type: "application/json"});
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
-  link.href = url; link.download = "api-test-client.workspace.json";
+  link.href = url; link.download = filename;
   document.body.append(link); link.click(); link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function downloadRunLog() {
+  const run = state.runs.get(state.draft.id);
+  if (!run?.id || !run.result) return;
+  $("download-run-log").disabled = true;
+  try {
+    const data = await api(`/api/runs/${encodeURIComponent(run.id)}/report`);
+    downloadJSON(data, "api-test-client.run-log.json");
+    toast("Run log downloaded with recognized secrets removed.");
+  } finally { $("download-run-log").disabled = false; }
+}
+
+async function exportWorkspace() {
+  const data = await api("/api/export");
+  downloadJSON(data, "api-test-client.workspace.json");
   toast("Workspace exported with recognized secrets removed. Review custom values before sharing.");
 }
 
@@ -653,11 +795,20 @@ function wireEvents() {
   });
   $("run-sequence").addEventListener("click", handle(runSequence));
   $("cancel-sequence").addEventListener("click", handle(cancelSequence));
+  $("download-run-log").addEventListener("click", handle(downloadRunLog));
+  $("retry-run-status").addEventListener("click", handle(async () => {
+    const sequenceId = state.draft.id;
+    const run = state.runs.get(sequenceId);
+    if (!run?.id) return;
+    $("retry-run-status").disabled = true;
+    try { await pollSequence(sequenceId, run.id); }
+    finally { $("retry-run-status").disabled = false; }
+  }));
   $("sequence-run-output").addEventListener("click", (event) => {
     const button = event.target.closest("[data-result-index]");
     if (!button) return;
-    const response = state.runs.get(state.draft.id)?.result?.steps[Number(button.dataset.resultIndex)]?.response;
-    if (response) { state.responses.set(`sequence:${state.draft.id}`, response); renderResponse(response); }
+    const run = state.runs.get(state.draft.id);
+    if (run) { selectRunResponse(state.draft.id, run, Number(button.dataset.resultIndex), true); renderSequenceResults(); }
   });
   $("environment-picker").addEventListener("change", handle(async (event) => {
     const workspace = clone(state.workspace); workspace.active_environment_id = event.target.value || null;

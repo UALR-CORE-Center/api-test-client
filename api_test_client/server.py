@@ -13,7 +13,7 @@ from urllib.parse import unquote, urlsplit
 
 from . import __version__
 from .engine import run_request, run_sequence
-from .workspace import MAX_WORKSPACE_BYTES, WorkspaceStore, export_workspace, validate_workspace
+from .workspace import MAX_WORKSPACE_BYTES, SECRET_NAME, WorkspaceStore, export_workspace, redact_report, validate_workspace
 
 STATIC = Path(__file__).parent / "static"
 
@@ -42,6 +42,15 @@ class ClientServer(ThreadingHTTPServer):
         self.request_slots = threading.BoundedSemaphore(8)
 
     def start_sequence(self, sequence, workspace, environment, variables):
+        # Runs and their credential context remain tied to the configuration
+        # that actually executed, even if the saved workspace changes later.
+        sequence, workspace, environment, variables = copy.deepcopy((sequence, workspace, environment, variables))
+        secret_names = {row.get("key") for rows in [workspace.get("variables", [])] +
+                        [env.get("variables", []) for env in workspace.get("environments", [])]
+                        for row in rows if row.get("secret")}
+        redaction_context = {**workspace, "runtime": [
+            {"key": key, "value": value, "secret": key in secret_names or bool(SECRET_NAME.search(key))}
+            for key, value in variables.items()], "run_sequence": sequence, "run_environment": environment}
         with self.jobs_lock:
             if sum(j["state"] == "running" for j in self.jobs.values()) >= 4:
                 raise ValueError("Four sequences are already running. Wait for a run to finish.")
@@ -49,7 +58,8 @@ class ClientServer(ThreadingHTTPServer):
                 if len(self.jobs) >= 50 and self.jobs[id_]["state"] == "completed":
                     del self.jobs[id_]
             id_ = secrets.token_urlsafe(12)
-            job = {"state": "running", "result": None, "cancel": threading.Event()}
+            job = {"state": "running", "result": None, "cancel": threading.Event(),
+                   "_redaction_context": redaction_context}
             self.jobs[id_] = job
 
         def execute():
@@ -60,8 +70,14 @@ class ClientServer(ThreadingHTTPServer):
                 result = run_sequence(sequence, workspace["requests"], environment,
                                       variables=variables, globals=workspace["variables"], cancel_event=job["cancel"],
                                       progress_callback=progress)
-            except Exception:
-                result = {"ok": False, "steps": [], "variables": {}, "error": "Sequence execution failed.", "cancelled": False}
+            except Exception as exc:
+                with self.jobs_lock:
+                    result = copy.deepcopy(job["result"]) if job["result"] is not None else {}
+                result.setdefault("steps", [])
+                result.setdefault("variables", {})
+                result.setdefault("cancelled", job["cancel"].is_set())
+                detail = f"{type(exc).__name__}: {exc}"[:1000]
+                result.update(ok=False, error=f"Sequence execution failed: {detail}")
             with self.jobs_lock:
                 job["result"] = result
                 job["state"] = "completed"
@@ -232,17 +248,24 @@ class ClientHandler(BaseHTTPRequestHandler):
             elif path.startswith("/api/runs/"):
                 segments = path.strip("/").split("/")
                 id_ = segments[2] if len(segments) >= 3 else ""
+                report = None
                 with self.server.jobs_lock:
                     job = self.server.jobs.get(id_)
                     if job is None:
                         self.respond(404, {"error": "Run not found."})
                     elif self.command == "GET" and len(segments) == 3:
                         self.respond(200, {"state": job["state"], "result": job["result"]})
+                    elif self.command == "GET" and segments[3:] == ["report"]:
+                        report = copy.deepcopy({"state": job["state"], "result": job["result"]})
+                        redaction_context = copy.deepcopy(job["_redaction_context"])
                     elif self.command == "POST" and segments[3:] == ["cancel"]:
                         job["cancel"].set()
                         self.respond(200, {"cancelled": True})
                     else:
                         self.respond(404, {"error": "Not found."})
+                if report is not None:
+                    self.respond(200, redact_report(report, redaction_context), extra={
+                        "Content-Disposition": f'attachment; filename="api-test-client-run-{id_}.json"'})
             else:
                 self.respond(404, {"error": "Not found."})
         except (ValueError, TypeError, KeyError, RecursionError) as exc:

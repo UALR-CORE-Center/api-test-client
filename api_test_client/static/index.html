@@ -82,7 +82,7 @@
 
           <details class="runtime-options"><summary>Run variables <span>Optional overrides for this run</span></summary><label for="runtime-variables">JSON object</label><textarea id="runtime-variables" class="code-input compact" spellcheck="false" placeholder='{"asset_id": "123"}'>{}</textarea><p class="field-help">Run values override global and environment variables. Step overrides apply to that step; newly extracted values carry forward.</p></details>
 
-          <section id="sequence-results" class="sequence-results" aria-label="Sequence run results" hidden><div class="section-topline"><h2>Sequence run <span id="sequence-run-state" class="run-state"></span></h2><button id="cancel-sequence" class="button small secondary" hidden>Cancel run</button></div><div id="sequence-run-output"></div></section>
+          <section id="sequence-results" class="sequence-results" aria-label="Sequence run results" hidden><div class="section-topline"><h2>Sequence run <span id="sequence-run-state" class="run-state"></span></h2><div class="run-actions"><button id="download-run-log" class="button small secondary" hidden>Download run log</button><button id="retry-run-status" class="button small secondary" hidden>Retry status</button><button id="cancel-sequence" class="button small secondary" hidden>Cancel run</button></div></div><div id="sequence-run-output"></div></section>
 
           <section class="response-card" aria-label="Response">
             <div class="response-heading"><h2>Response</h2><div id="response-metrics" class="response-metrics"></div></div>

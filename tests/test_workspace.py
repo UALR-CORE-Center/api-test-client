@@ -1,6 +1,7 @@
 """Persistence and sharing checks that protect a user's saved credentials."""
 
 import copy
+import base64
 import json
 import os
 from pathlib import Path
@@ -222,6 +223,79 @@ class WorkspaceTests(unittest.TestCase):
                 self.assertEqual(redacted["headers"]["X-Echo"], '"[REDACTED]"')
                 self.assertEqual(redacted["debug"], 'echo "[REDACTED]"')
                 self.assertEqual(report["body"], body)
+
+    def test_report_resolves_marked_secret_aliases_using_runtime_precedence(self):
+        workspace = new_workspace()
+        workspace["variables"] = [{"key": "opaque_credential", "value": "{{source}}", "secret": True},
+                                  {"key": "source", "value": "global-old-value", "secret": False}]
+        workspace["environments"][0]["variables"] = [{"key": "source", "value": "environment-old-value"}]
+        credential = 'runtime-"quoted"-backslash\\-newline\n-Ω'
+        workspace["runtime"] = [{"key": "opaque_credential", "value": "{{alias}}", "secret": True},
+                                {"key": "alias", "value": "{{source}}", "secret": False},
+                                {"key": "source", "value": credential, "secret": False},
+                                {"key": "public_value", "value": "ordinary-runtime-value", "secret": False}]
+        report = {"body": json.dumps({"echo": credential, "public": "ordinary-runtime-value"}),
+                  "json": {"echo": credential, "public": "ordinary-runtime-value"},
+                  "debug": json.dumps(credential, ensure_ascii=True)}
+        snapshot = copy.deepcopy(workspace)
+        redacted = redact_report(report, workspace)
+        self.assertEqual(redacted["json"]["echo"], "[REDACTED]")
+        self.assertEqual(json.loads(redacted["body"])["echo"], "[REDACTED]")
+        self.assertEqual(redacted["debug"], '"[REDACTED]"')
+        self.assertEqual(redacted["json"]["public"], "ordinary-runtime-value")
+        self.assertEqual(workspace, snapshot)
+
+    def test_report_masks_custom_secret_step_overrides_and_their_aliases(self):
+        workspace = new_workspace()
+        workspace["variables"] = [{"key": "opaque_credential", "value": "saved-private", "secret": True}]
+        workspace["runtime"] = [{"key": "opaque_credential", "value": "runtime-private", "secret": True},
+                                {"key": "source", "value": "runtime-source", "secret": False}]
+        workspace["run_sequence"] = {"steps": [{"request_id": "demo-health", "variables": {
+            "opaque_credential": "prefix-{{source}}", "source": "step-private", "public": "visible-step-value",
+        }}]}
+        workspace["run_environment"] = workspace["environments"][0]
+        report = {"body": "saved-private runtime-private prefix-step-private visible-step-value",
+                  "json": {"echo": "prefix-step-private", "public": "visible-step-value"}}
+        redacted = redact_report(report, workspace)
+        self.assertEqual(redacted["body"], "[REDACTED] [REDACTED] [REDACTED] visible-step-value")
+        self.assertEqual(redacted["json"], {"echo": "[REDACTED]", "public": "visible-step-value"})
+
+    def test_report_resolves_composed_auth_with_runtime_and_step_overrides(self):
+        workspace = new_workspace()
+        workspace["variables"] = [{"key": "credential", "value": "global-old-value"}]
+        environment = workspace["environments"][0]
+        environment["variables"] = [{"key": "prefix", "value": "Environment-"},
+                                    {"key": "credential", "value": "environment-old-value"}]
+        workspace["requests"][0]["auth"] = {"type": "api_key", "header": "X-Lookup", "value": "{{prefix}}{{credential}}"}
+        workspace["runtime"] = [{"key": "credential", "value": "runtime-value", "secret": False},
+                                {"key": "prefix", "value": "Runtime-", "secret": False}]
+        workspace["run_sequence"] = {"steps": [{"request_id": "demo-health", "variables": {"credential": "step-value"}}]}
+        workspace["run_environment"] = environment
+        report = {"body": "Runtime-runtime-value Runtime-step-value ordinary-public-value",
+                  "json": {"echo": "Runtime-step-value", "public": "ordinary-public-value"}}
+        redacted = redact_report(report, workspace)
+        self.assertEqual(redacted["body"], "[REDACTED] [REDACTED] ordinary-public-value")
+        self.assertEqual(redacted["json"]["echo"], "[REDACTED]")
+        self.assertEqual(redacted["json"]["public"], "ordinary-public-value")
+
+    def test_report_resolves_basic_auth_with_step_credentials(self):
+        workspace = new_workspace()
+        workspace["environments"][0]["auth"] = {"type": "basic", "username": "{{account}}", "password": "{{credential}}"}
+        workspace["run_sequence"] = {"steps": [{"request_id": "demo-health", "variables": {
+            "account": "step-user", "credential": "step-password",
+        }}]}
+        encoded = base64.b64encode(b"step-user:step-password").decode()
+        report = {"body": "echo " + encoded, "json": {"echo": "step-password", "public": "step-user"}}
+        redacted = redact_report(report, workspace)
+        self.assertEqual(redacted["body"], "echo [REDACTED]")
+        self.assertEqual(redacted["json"], {"echo": "[REDACTED]", "public": "step-user"})
+
+    def test_report_ignores_missing_and_cyclic_secret_aliases_without_masking_public_values(self):
+        workspace = new_workspace()
+        workspace["variables"] = [{"key": "credential", "value": "{{missing}}", "secret": True},
+                                  {"key": "cycle", "value": "{{cycle}}", "secret": True}]
+        report = {"body": "ordinary-public-value", "json": {"public": "ordinary-public-value"}}
+        self.assertEqual(redact_report(report, workspace), report)
 
     def test_export_removes_literal_json_escaped_credentials_but_keeps_templates(self):
         workspace = new_workspace()

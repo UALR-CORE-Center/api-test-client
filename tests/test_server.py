@@ -144,19 +144,175 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(result["json"]["received"], {"message": "runtime payload"})
         self.assertIsInstance(result["assertions"], list)
 
-    def run_sequence(self, sequence=None):
+    def run_sequence(self, sequence=None, variables=None):
         status, value, _ = self.http("POST", "/api/sequences/run", {
             "sequence": sequence or self.workspace["sequences"][0], "environment_id": "local-demo",
+            "variables": variables or {},
         })
         self.assertEqual(status, 202, value)
+        return value["run_id"], self.wait_for_run(value["run_id"])
+
+    def wait_for_run(self, run_id):
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
-            status, job, _ = self.http("GET", "/api/runs/" + value["run_id"])
+            status, job, _ = self.http("GET", "/api/runs/" + run_id)
             self.assertEqual(status, 200)
             if job["state"] == "completed":
-                return value["run_id"], job["result"]
+                return job["result"]
             time.sleep(0.01)
         self.fail("Local sequence did not complete within five seconds")
+
+    def test_run_report_preserves_failure_diagnostics(self):
+        self.workspace["requests"][0]["url"] = self.base + "/demo/missing"
+        self.workspace["requests"][1]["url"] = "{{not_defined}}"
+        self.workspace["sequences"][0].update({
+            "stop_on_failure": False,
+            "steps": [{"request_id": "demo-health"}, {"request_id": "demo-echo"}],
+        })
+        self.server.store.save(self.workspace)
+        run_id, result = self.run_sequence()
+        self.assertFalse(result["ok"])
+        status, report, headers = self.http("GET", f"/api/runs/{run_id}/report")
+        self.assertEqual(status, 200)
+        self.assertEqual(set(report), {"state", "result"})
+        self.assertEqual(report["state"], "completed")
+        self.assertFalse(report["result"]["ok"])
+        first, second = [step["response"] for step in report["result"]["steps"]]
+        self.assertEqual(first["status"], 404)
+        self.assertEqual(json.loads(first["body"]), {"error": "Not found."})
+        self.assertFalse(first["assertions"][0]["passed"])
+        self.assertIn("received HTTP 404", first["assertions"][0]["message"])
+        self.assertIn("not_defined", second["error"])
+        self.assertIsNone(second["status"])
+        self.assertEqual(headers["Content-Disposition"],
+                         f'attachment; filename="api-test-client-run-{run_id}.json"')
+        self.assertEqual(headers["Cache-Control"], "no-store")
+
+    def test_run_report_is_protected_by_session_host_and_origin_checks(self):
+        run_id, _ = self.run_sequence()
+        path = f"/api/runs/{run_id}/report"
+        for headers, token in (({}, False), ({"X-Client-Token": "wrong"}, False),
+                               ({"Host": "attacker.example"}, True),
+                               ({"Origin": "https://attacker.example"}, True),
+                               ({"Origin": "null"}, True),
+                               ({"Sec-Fetch-Site": "cross-site"}, True)):
+            with self.subTest(headers=headers, token=token):
+                status, value, _ = self.http("GET", path, headers=headers, token=token)
+                self.assertEqual(status, 403)
+                self.assertNotIn("result", value)
+        status, value, _ = self.http("GET", "/api/runs/does-not-exist/report")
+        self.assertEqual(status, 404)
+        self.assertIn("error", value)
+
+    def test_run_report_uses_original_credentials_after_workspace_changes(self):
+        scanner_key = "original-scanner-credential"
+        lookup_key = 'runtime-lookup-"quoted"-backslash\\'
+        runtime_secret = 'runtime-private-"quoted"-backslash\\-newline\n-Ω'
+        step_secret = 'step-private-"quoted"-backslash\\-newline\n-測試'
+        self.workspace["variables"] = [
+            {"key": "opaque_credential", "value": "saved-private-credential", "secret": True},
+        ]
+        self.workspace["environments"][0].update({
+            "api_key": scanner_key,
+            "variables": [
+                {"key": "prefix", "value": "Lookup-", "secret": False},
+                {"key": "lookup_credential", "value": "obsolete-lookup-credential", "secret": False},
+            ],
+        })
+        request = self.workspace["requests"][1]
+        request.update({
+            "auth": {"type": "api_key", "header": "X-Custom-Lookup", "value": "{{prefix}}{{lookup_credential}}"},
+            "body": '{"a": {{api_key | json}}, "b": {{lookup_value | json}}, '
+                    '"c": {{opaque_credential | json}}, "d": {{access_token | json}}, '
+                    '"public": {{public_message | json}}}',
+        })
+        self.workspace["variables"].append({"key": "lookup_value", "value": "{{prefix}}{{lookup_credential}}", "secret": False})
+        sequence = {"id": "credential-run", "name": "Credential run", "stop_on_failure": True,
+                    "steps": [{"request_id": request["id"]},
+                              {"request_id": request["id"], "variables": {"opaque_credential": step_secret}}]}
+        self.server.store.save(self.workspace)
+        run_id, result = self.run_sequence(sequence, variables={
+            "lookup_credential": lookup_key, "opaque_credential": runtime_secret,
+            "access_token": "runtime-token-value", "public_message": "public report information",
+        })
+        self.assertTrue(result["ok"], result)
+        self.server.store.save(new_workspace(self.base))
+        status, report, _ = self.http("GET", f"/api/runs/{run_id}/report")
+        self.assertEqual(status, 200)
+        for step in report["result"]["steps"]:
+            response = step["response"]
+            self.assertEqual(response["json"]["received"], {
+                "a": "[REDACTED]", "b": "[REDACTED]", "c": "[REDACTED]", "d": "[REDACTED]",
+                "public": "public report information",
+            })
+            self.assertEqual(json.loads(response["body"])["received"], response["json"]["received"])
+        status, polling, _ = self.http("GET", f"/api/runs/{run_id}")
+        self.assertEqual(status, 200)
+        self.assertEqual(set(polling), {"state", "result"})
+        self.assertEqual(polling["result"], result)
+
+    def test_run_report_contains_live_snapshot_without_private_job_context(self):
+        progress_ready = threading.Event()
+        finish = threading.Event()
+        partial = {"ok": False, "steps": [{"request_id": "pending", "response": {
+            "ok": False, "status": 401, "body": '"midrun-private-value"',
+            "json": "midrun-private-value", "error": None,
+        }}], "variables": {}, "error": None, "cancelled": False}
+
+        def running_sequence(*args, progress_callback, **kwargs):
+            progress_callback(partial)
+            progress_ready.set()
+            finish.wait(3)
+            return partial
+
+        with patch("api_test_client.server.run_sequence", side_effect=running_sequence):
+            status, created, _ = self.http("POST", "/api/sequences/run", {
+                "sequence": self.workspace["sequences"][0],
+                "variables": {"access_token": "midrun-private-value"},
+            })
+            self.assertEqual(status, 202)
+            try:
+                self.assertTrue(progress_ready.wait(2))
+                run_id = created["run_id"]
+                status, report, _ = self.http("GET", f"/api/runs/{run_id}/report")
+                self.assertEqual(status, 200)
+                self.assertEqual(report["state"], "running")
+                self.assertEqual(set(report), {"state", "result"})
+                self.assertEqual(report["result"]["steps"][0]["response"]["json"], "[REDACTED]")
+                self.assertEqual(partial["steps"][0]["response"]["json"], "midrun-private-value")
+            finally:
+                finish.set()
+            self.wait_for_run(created["run_id"])
+
+    def test_unexpected_sequence_error_keeps_completed_steps_and_concrete_cause(self):
+        partial = {"ok": True, "steps": [{"request_id": "completed", "response": {
+            "ok": True, "status": 200, "body": "first completed step", "error": None,
+        }}], "variables": {"item_id": 42}, "error": None, "cancelled": False}
+
+        def failing_sequence(*args, progress_callback, **kwargs):
+            progress_callback(partial)
+            raise RuntimeError("Unable to prepare the next fixture")
+
+        with patch("api_test_client.server.run_sequence", side_effect=failing_sequence):
+            run_id, result = self.run_sequence()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["steps"], partial["steps"])
+        self.assertEqual(result["variables"], {"item_id": 42})
+        self.assertIn("RuntimeError: Unable to prepare the next fixture", result["error"])
+        status, report, _ = self.http("GET", f"/api/runs/{run_id}/report")
+        self.assertEqual(status, 200)
+        self.assertEqual(report["result"]["steps"], partial["steps"])
+        self.assertIn("RuntimeError: Unable to prepare the next fixture", report["result"]["error"])
+
+    def test_unexpected_sequence_error_before_progress_has_bounded_diagnostics(self):
+        with patch("api_test_client.server.run_sequence", side_effect=RuntimeError("failure " + "x" * 2000)):
+            _, result = self.run_sequence()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["steps"], [])
+        self.assertEqual(result["variables"], {})
+        self.assertFalse(result["cancelled"])
+        self.assertIn("RuntimeError: failure", result["error"])
+        self.assertLess(len(result["error"]), 1100)
 
     def test_sequence_polling_chains_response_variable(self):
         _, result = self.run_sequence()
