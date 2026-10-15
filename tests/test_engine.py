@@ -52,6 +52,14 @@ class _Handler(BaseHTTPRequestHandler):
             })
         elif path == "/created":
             self.send_body(201, {"id": 42, "items": [{"name": "first"}], "optional": None})
+        elif path == "/lookup":
+            query = parse_qs(urlsplit(self.path).query)
+            count = int(query.get("count", ["1"])[0])
+            status = int(query.get("status", ["200"])[0])
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+            self.send_body(status, {"count": count, "results": [
+                {"id": 42 + index, "name": body["searchVal"]} for index in range(count)
+            ]})
         elif path == "/null":
             self.send_body(200, None)
         elif path == "/booleans":
@@ -190,6 +198,70 @@ class EngineTests(unittest.TestCase):
         result = self.run_http(method="POST", body_type="json", body="{bad}")
         self.assertFalse(result["ok"])
         self.assertIn("valid JSON", result["error"])
+        self.assertEqual(_Handler.visited, [])
+
+    def test_json_modifier_preserves_types_and_escapes_string_values(self):
+        values = {
+            "text": 'Windows "Ops"\\Station Ω\nNext line',
+            "integer": 42,
+            "decimal": 1.25,
+            "items": ["first", 2, True, None],
+            "object": {"quote": 'a"b', "path": "C:\\Users\\Ops", "enabled": False},
+            "flag": True,
+            "nothing": None,
+        }
+        body = "{" + ",".join(json.dumps(key) + ": {{" + key + " | json}}" for key in values) + "}"
+        result = run_request(self.request(method="POST", body_type="json", body=body), self.environment, values)
+        self.assertTrue(result["ok"], result)
+        posted = json.loads(result["json"]["body"])
+        self.assertEqual(posted, values)
+        self.assertIs(type(posted["integer"]), int)
+        self.assertIs(type(posted["flag"]), bool)
+        self.assertIsNone(posted["nothing"])
+
+    def test_json_modifier_resolves_recursive_string_aliases(self):
+        values = {
+            "name": 'Asset "α"\\Windows',
+            "alias": "prefix {{name}} suffix",
+            "outer": "{{alias}}",
+            "number": 42,
+            "number_alias": "{{number}}",
+            "container": {"name": "{{outer}}", "nested": ["{{name}}", None, 3]},
+        }
+        result = run_request(self.request(
+            method="POST", body_type="json",
+            body='{"value": {{outer | json}}, "number_alias": {{number_alias|json}}, "container": {{container | json}}}',
+        ), self.environment, values)
+        self.assertTrue(result["ok"], result)
+        posted = json.loads(result["json"]["body"])
+        self.assertEqual(posted["value"], 'prefix Asset "α"\\Windows suffix')
+        self.assertEqual(posted["number_alias"], "42")
+        self.assertEqual(posted["container"], {"name": posted["value"], "nested": [values["name"], None, 3]})
+
+    def test_json_modifier_missing_variable_and_cycles_fail_before_network(self):
+        cases = [
+            ({}, "missing", "is not defined"),
+            ({"alias": "{{missing}}"}, "alias", "is not defined"),
+            ({"a": "{{b}}", "b": "{{a}}"}, "a", "circular"),
+            ({"a": "{{b | json}}", "b": "{{a}}"}, "a", "circular"),
+            ({"a": {"nested": "{{a}}"}}, "a", "circular"),
+        ]
+        for values, name, error in cases:
+            with self.subTest(values=values):
+                result = run_request(self.request(method="POST", body_type="json", body='{"value": {{' + name + ' | json}}}'), self.environment, values)
+                self.assertFalse(result["ok"])
+                self.assertIn(error, result["error"])
+        self.assertEqual(_Handler.visited, [])
+
+    def test_json_modifier_does_not_change_plain_interpolation(self):
+        result = run_request(self.request(method="POST", body_type="json", body='{"number":"{{number}}", "empty":"{{nothing}}", "array":{{array}}}'), self.environment, {"number": 42, "nothing": None, "array": [1, True]})
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(json.loads(result["json"]["body"]), {"number": "42", "empty": "", "array": [1, True]})
+
+    def test_json_modifier_rejects_non_json_numbers(self):
+        result = run_request(self.request(method="POST", body_type="json", body='{"value": {{value | json}}}'), self.environment, {"value": float("nan")})
+        self.assertFalse(result["ok"])
+        self.assertIn("cannot be encoded as JSON", result["error"])
         self.assertEqual(_Handler.visited, [])
 
     def test_text_and_form_content_types(self):
@@ -463,6 +535,73 @@ class EngineTests(unittest.TestCase):
         self.assertTrue(result["ok"], result)
         self.assertEqual(result["variables"], {"asset_id": 42})
         self.assertEqual(result["steps"][1]["response"]["json"]["query"], {"name": ["step"]})
+
+    def lookup_requests(self, count=1, status=200):
+        return [
+            self.request(
+                id="lookup", name="Resolve asset by name", method="POST", url=f"/lookup?count={count}&status={status}",
+                body_type="json", body='{"searchVal": {{windows_asset_name | json}}}',
+                assertions=[
+                    {"type": "status", "expected": 200},
+                    {"type": "json_equals", "path": "$.count", "expected": 1},
+                    {"type": "json_length_equals", "path": "$.results", "expected": 1},
+                ],
+                extract=[{"name": "windows_asset_id", "path": "$.results[0].id"}],
+            ),
+            self.request(id="read", name="Read resolved asset", url="/items/{{windows_asset_id}}"),
+        ]
+
+    def test_required_exact_name_lookup_chains_id_only_after_single_match(self):
+        name = 'Windows "Operator"\\Station Ω'
+        requests = self.lookup_requests()
+        snapshots = []
+        result = run_sequence({"stop_on_failure": False, "steps": [{"request_id": "lookup", "required": True}, {"request_id": "read"}]}, requests, self.environment, {"windows_asset_name": name}, progress_callback=snapshots.append)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["variables"], {"windows_asset_id": 42})
+        self.assertEqual(result["steps"][0]["response"]["json"]["results"][0]["name"], name)
+        self.assertEqual(result["steps"][1]["response"]["json"]["path"], "/items/42")
+        self.assertEqual(snapshots[0]["variables"], {"windows_asset_id": 42})
+
+    def test_required_name_lookup_stops_on_zero_or_multiple_matches_in_continue_mode(self):
+        for count in (0, 2):
+            with self.subTest(count=count):
+                _Handler.visited.clear()
+                snapshots = []
+                result = run_sequence({"stop_on_failure": False, "steps": [{"request_id": "lookup", "required": True}, {"request_id": "read"}]}, self.lookup_requests(count=count), self.environment, {"windows_asset_name": "Windows"}, progress_callback=snapshots.append)
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["variables"], {})
+                self.assertEqual(len(result["steps"]), 1)
+                self.assertEqual(snapshots[0]["variables"], {})
+                self.assertEqual(_Handler.visited, [f"/lookup?count={count}&status=200"])
+                self.assertIn("Resolve asset by name", result["error"])
+
+    def test_required_name_lookup_stops_on_unauthorized_or_forbidden(self):
+        for status in (401, 403):
+            with self.subTest(status=status):
+                _Handler.visited.clear()
+                result = run_sequence({"stop_on_failure": False, "steps": [{"request_id": "lookup", "required": True}, {"request_id": "read"}]}, self.lookup_requests(status=status), self.environment, {"windows_asset_name": "Windows"})
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["steps"][0]["response"]["status"], status)
+                self.assertEqual(result["variables"], {})
+                self.assertEqual(len(result["steps"]), 1)
+                self.assertEqual(_Handler.visited, [f"/lookup?count=1&status={status}"])
+
+    def test_optional_failed_lookup_does_not_publish_id_in_continue_mode(self):
+        requests = self.lookup_requests(count=2) + [self.request(id="final")]
+        result = run_sequence({"stop_on_failure": False, "steps": [{"request_id": "lookup"}, {"request_id": "read"}, {"request_id": "final"}]}, requests, self.environment, {"windows_asset_name": "Windows"})
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["variables"], {})
+        self.assertEqual(len(result["steps"]), 3)
+        self.assertEqual(result["steps"][0]["response"]["extracted"], {"windows_asset_id": 42})
+        self.assertIn("windows_asset_id", result["steps"][1]["response"]["error"])
+        self.assertTrue(result["steps"][2]["response"]["ok"])
+        self.assertEqual(_Handler.visited, ["/lookup?count=2&status=200", "/echo"])
+
+    def test_failed_step_does_not_overwrite_previously_published_id(self):
+        requests = [self.request(id="initial", url="/created", extract=[{"name": "asset_id", "path": "$.id"}]), self.request(id="failure", url="/echo", assertions=[{"type": "status", "expected": 201}], extract=[{"name": "asset_id", "path": "$.path"}])]
+        result = run_sequence({"stop_on_failure": False, "steps": [{"request_id": "initial"}, {"request_id": "failure"}]}, requests, self.environment)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["variables"], {"asset_id": 42})
 
     def test_sequence_generated_variables_are_stable_for_replay_and_fresh_next_run(self):
         first_time = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)

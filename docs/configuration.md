@@ -205,6 +205,65 @@ Additional numeric and length checks:
 array, object, or string and a nonnegative integer expectation. See the
 [README](../README.md#requests-and-response-checks) for all assertion types.
 
+## Resolve a name before running dependent requests
+
+Add a lookup request before requests that need an ID. Use your API's exact
+filter and check its total match count, rather than accepting the first result
+from a partial search. This example assumes an API that accepts an exact-name
+filter at `/assets/search` and returns `{"count": 1, "results": [{"id": 42}]}`.
+Adapt the route, filter, and response paths to your API.
+
+```json
+{
+  "id": "resolve-asset",
+  "name": "Resolve asset name",
+  "method": "POST",
+  "url": "/assets/search",
+  "body_type": "json",
+  "body": "{\"name\": {{asset_name | json}}, \"match\": \"exact\", \"limit\": 2}",
+  "assertions": [
+    {"name": "Lookup accepted", "type": "status", "expected": 200},
+    {"name": "Exactly one matching asset", "type": "json_equals", "path": "$.count", "expected": 1},
+    {"type": "json_length_equals", "path": "$.results", "expected": 1},
+    {"type": "json_greater_than", "path": "$.results[0].id", "expected": 0}
+  ],
+  "extract": [{"name": "asset_id", "path": "$.results[0].id"}]
+}
+```
+
+Use the unquoted `{{asset_name | json}}` placeholder in inline bodies or
+`body_file` templates. It serializes the resolved value as JSON, safely escaping
+quotes, backslashes, and other characters in a name. Strings stay strings;
+native numbers, booleans, objects, arrays, and null keep their types. Aliases
+inside strings expand before serialization. Plain `{{asset_name}}` still inserts
+raw text. Do not add quotes around a `| json` placeholder.
+
+Put `asset_name` in your private environment variables and place the lookup
+first in the sequence:
+
+```json
+{
+  "id": "asset-checks",
+  "name": "Look up asset and run checks",
+  "stop_on_failure": false,
+  "steps": [
+    {"request_id": "resolve-asset", "required": true},
+    {"request_id": "check-asset"}
+  ]
+}
+```
+
+Here, `check-asset` is a separately saved request using `{{asset_id}}`, for
+example in `/assets/{{asset_id}}`. A required step stops the sequence if its
+request, assertions, or extraction fails, even with `stop_on_failure: false`.
+Failed steps never publish extracted variables to later requests. IDs are
+resolved anew for each run; lookups do not rewrite your private file.
+
+If lookups require different credentials, set their request-level `auth` to a
+separate private variable. Other requests can continue to inherit the active
+environment's authentication. Use client version **0.3.0** or newer for required
+steps and the JSON interpolation modifier.
+
 ## Terminal runs and reload behavior
 
 Start without opening a browser:

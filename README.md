@@ -138,8 +138,11 @@ and cannot be overridden. Ordinary variables can alias them, for example
 `"run_id": "{{$uuid}}"`.
 
 Mark credential variables as **secret** so they are removed from workspace
-exports. For JSON bodies, substituted values must still produce valid JSON;
-place quotes around string placeholders where needed.
+exports. In JSON bodies, use an unquoted `{{name | json}}` placeholder to encode
+a variable as JSON. For example, `{"name": {{asset_name | json}}}` safely handles
+names containing quotes or backslashes. Native numbers, booleans, arrays,
+objects, and null retain their JSON types; a variable stored as a string stays
+a string. Plain `{{name}}` substitution remains available for raw templates.
 
 ## Requests and response checks
 
@@ -184,7 +187,7 @@ JSON response. See [Configuration files](docs/configuration.md) for examples.
 
 Define an extractor with a variable name and JSON path to reuse a response
 value. For example, extract `$.id` as `asset_id`, then use `{{asset_id}}` in the
-next request.
+next request. Only passing steps publish extracted values to later steps.
 
 ## Sequences
 
@@ -197,7 +200,11 @@ A sequence is an ordered list of saved requests. A typical sequence might:
 
 Select an environment, choose the requests, and add any per-step variable
 overrides. Turn on **stop on failure** when later steps should depend on earlier
-success. Cancellation takes effect between requests; an in-flight request must
+success. Mark a lookup or prerequisite as a **Required step** to stop on its
+failure even when the sequence allows other failures. A name-to-ID lookup can
+assert that a filtered response has exactly one match, extract its ID, and pass
+it to later requests. See the [configuration example](docs/configuration.md#resolve-a-name-before-running-dependent-requests).
+Cancellation takes effect between requests; an in-flight request must
 finish or time out before the run stops.
 
 ## Command-line runs

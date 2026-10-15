@@ -87,16 +87,36 @@ def _text(value: Any) -> str:
 
 
 def _interpolate(value: Any, variables: Mapping[str, Any]) -> str:
+    def resolve_json(value: Any, trail: tuple[str, ...]) -> Any:
+        if isinstance(value, str):
+            return expand(value, trail)
+        if isinstance(value, dict):
+            return {key: resolve_json(item, trail) for key, item in value.items()}
+        if isinstance(value, list):
+            return [resolve_json(item, trail) for item in value]
+        return value
+
     def expand(text: str, trail: tuple[str, ...] = ()) -> str:
         def replace(match):
-            name = match.group(1).strip()
+            expression = match.group(1).strip()
+            modifier = re.fullmatch(r"(.+?)\s*\|\s*json", expression)
+            name = modifier.group(1).strip() if modifier else expression
             if name not in variables:
                 raise RequestError(f"Variable '{{{{{name}}}}}' is not defined.")
             if name in trail:
                 raise RequestError(f"Variable '{name}' contains a circular reference.")
             if len(trail) >= 20:
                 raise RequestError("Variable references exceed the maximum nesting depth.")
-            return expand(_text(variables[name]), (*trail, name))
+            next_trail = (*trail, name)
+            if modifier:
+                try:
+                    return json.dumps(resolve_json(variables[name], next_trail),
+                                      separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+                except (TypeError, ValueError) as exc:
+                    if isinstance(exc, RequestError):
+                        raise
+                    raise RequestError(f"Variable '{name}' cannot be encoded as JSON.") from exc
+            return expand(_text(variables[name]), next_trail)
 
         return _VARIABLE.sub(replace, text)
 
@@ -475,10 +495,11 @@ def run_request(request, environment, variables=None, globals=None, *, _dynamic_
 
 
 def run_sequence(sequence, requests, environment, variables=None, globals=None, cancel_event=None, progress_callback=None) -> dict:
-    """Run ordered requests, making extracted variables available to later steps.
+    """Run ordered requests, publishing extractions from successful steps only.
 
     An optional progress observer receives an independent snapshot after each
     completed step. Observer errors cannot interrupt request execution.
+    A required step stops the sequence on failure, even in continue mode.
     """
     dynamic_context = _run_variables()
     result = {"ok": True, "steps": [], "variables": {}, "run_variables": dynamic_context.copy(), "error": None, "cancelled": False}
@@ -496,11 +517,12 @@ def run_sequence(sequence, requests, environment, variables=None, globals=None, 
         step_variables = {**runtime, **result["variables"], **_variable_map(step.get("variables"))}
         response = run_request(request, environment, step_variables, globals, _dynamic_context=dynamic_context)
         result["steps"].append({"request_id": request_id, "name": request.get("name", request_id), "response": response})
-        result["variables"].update(response["extracted"])
+        if response["ok"]:
+            result["variables"].update(response["extracted"])
         stop = False
         if not response["ok"]:
             result["ok"] = False
-            if sequence.get("stop_on_failure", True):
+            if sequence.get("stop_on_failure", True) or step.get("required", False):
                 result["error"] = f"Sequence stopped because request '{request.get('name', request_id)}' failed."
                 stop = True
         if progress_callback is not None:

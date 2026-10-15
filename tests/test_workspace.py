@@ -74,6 +74,18 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), previous)
         self.assertEqual(list(self.path.parent.iterdir()), [self.path])
 
+    def test_required_steps_round_trip_and_reject_non_boolean_values(self):
+        workspace = self.store.load()
+        step = workspace["sequences"][0]["steps"][0]
+        step["required"] = True
+        self.store.save(workspace)
+        self.assertTrue(self.store.load()["sequences"][0]["steps"][0]["required"])
+        for invalid in ("true", 1, None, [], {}):
+            with self.subTest(invalid=invalid):
+                step["required"] = invalid
+                with self.assertRaisesRegex(ValueError, "Step required must be a boolean"):
+                    validate_workspace(workspace)
+
     def test_corrupt_workspace_is_reported_without_replacement(self):
         self.path.write_text("not JSON", encoding="utf-8")
         with self.assertRaises(ValueError):
@@ -194,6 +206,35 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(response["json"]["id"], "public-id")
         self.assertEqual(response["headers"]["Content-Type"], "application/json")
         self.assertEqual(report, snapshot)
+
+    def test_report_redacts_json_escaped_scalar_credentials(self):
+        workspace = new_workspace()
+        credential = 'private-"quoted"-backslash\\-newline\n-Ω'
+        workspace["variables"] = [{"key": "credential", "value": credential, "secret": True}]
+        for ensure_ascii in (False, True):
+            with self.subTest(ensure_ascii=ensure_ascii):
+                body = json.dumps(credential, ensure_ascii=ensure_ascii)
+                report = {"body": body, "json": credential,
+                          "headers": {"X-Echo": body}, "debug": "echo " + body}
+                redacted = redact_report(report, workspace)
+                self.assertEqual(json.loads(redacted["body"]), "[REDACTED]")
+                self.assertEqual(redacted["json"], "[REDACTED]")
+                self.assertEqual(redacted["headers"]["X-Echo"], '"[REDACTED]"')
+                self.assertEqual(redacted["debug"], 'echo "[REDACTED]"')
+                self.assertEqual(report["body"], body)
+
+    def test_export_removes_literal_json_escaped_credentials_but_keeps_templates(self):
+        workspace = new_workspace()
+        credential = 'private-"quoted"-backslash\\-newline\n-Ω'
+        workspace["environments"][0]["api_key"] = credential
+        workspace["requests"][0]["body"] = json.dumps({"credential": credential, "public": "ordinary"})
+        workspace["requests"][1]["body"] = json.dumps(credential, ensure_ascii=False)
+        workspace["requests"][2]["body"] = '{"credential": {{api_key | json}}, "name": "{{name}}"}'
+        exported = export_workspace(workspace)
+        self.assertEqual(json.loads(exported["requests"][0]["body"]), {"credential": "", "public": "ordinary"})
+        self.assertEqual(json.loads(exported["requests"][1]["body"]), "")
+        self.assertEqual(exported["requests"][2]["body"], workspace["requests"][2]["body"])
+        self.assertEqual(workspace["environments"][0]["api_key"], credential)
 
 
 if __name__ == "__main__":

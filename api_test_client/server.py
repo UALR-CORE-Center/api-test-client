@@ -11,6 +11,7 @@ import secrets
 import threading
 from urllib.parse import unquote, urlsplit
 
+from . import __version__
 from .engine import run_request, run_sequence
 from .workspace import MAX_WORKSPACE_BYTES, WorkspaceStore, export_workspace, validate_workspace
 
@@ -75,7 +76,7 @@ class ClientServer(ThreadingHTTPServer):
 
 
 class ClientHandler(BaseHTTPRequestHandler):
-    server_version = "API-Test-Client/0.2"
+    server_version = f"API-Test-Client/{__version__}"
 
     def setup(self):
         super().setup()

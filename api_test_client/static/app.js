@@ -198,7 +198,7 @@ function updateBodyUI() {
   const type = state.draft.body_type;
   $("request-body").hidden = type === "none";
   $("format-body").hidden = type !== "json";
-  $("body-help").textContent = {none: "This request does not include a body.", json: "JSON values may use {{variables}}. Content-Type defaults to application/json.", text: "Send a plain text body, with optional {{variables}}.", form: "Use URL-encoded text, for example name={{name}}&enabled=true."}[type] || "";
+  $("body-help").textContent = {none: "This request does not include a body.", json: "Use unquoted {{value | json}} to insert a JSON value with proper escaping. Content-Type defaults to application/json.", text: "Send a plain text body, with optional {{variables}}.", form: "Use URL-encoded text, for example name={{name}}&enabled=true."}[type] || "";
 }
 
 function renderEditor() {
@@ -410,7 +410,7 @@ function renderResponse(response) {
 
 function renderSteps() {
   const steps = state.draft.steps;
-  $("sequence-steps").innerHTML = steps.map((step, index) => `<article class="sequence-step" data-step-index="${index}"><div class="step-heading"><span class="step-number">${index + 1}</span><label class="sr-only" for="step-request-${index}">Saved request for step ${index + 1}</label><select id="step-request-${index}" data-step-field="request_id"><option value="">Choose a saved request…</option>${state.workspace.requests.map((request) => `<option value="${escapeHTML(request.id)}"${request.id === step.request_id ? " selected" : ""}>${escapeHTML(request.method)} · ${escapeHTML(request.name)}</option>`).join("")}</select><div class="step-buttons"><button type="button" class="icon-button" data-step-action="up" ${index === 0 ? "disabled" : ""} aria-label="Move step ${index + 1} up" title="Move up">↑</button><button type="button" class="icon-button" data-step-action="down" ${index === steps.length - 1 ? "disabled" : ""} aria-label="Move step ${index + 1} down" title="Move down">↓</button><button type="button" class="icon-button" data-step-action="remove" aria-label="Remove step ${index + 1}" title="Remove step">×</button></div></div><details class="step-overrides"><summary>Step variables <span>· JSON overrides</span></summary><label class="sr-only" for="step-variables-${index}">Variable overrides for step ${index + 1}</label><textarea id="step-variables-${index}" class="code-input compact" data-step-field="_variablesText" spellcheck="false">${escapeHTML(step._variablesText || "{}")}</textarea></details></article>`).join("") || `<div class="editor-card empty-copy">${state.workspace.requests.length ? "Add your first step to start building a sequence." : "Save a request first, then add it as a sequence step."}</div>`;
+  $("sequence-steps").innerHTML = steps.map((step, index) => `<article class="sequence-step" data-step-index="${index}"><div class="step-heading"><span class="step-number">${index + 1}</span><label class="sr-only" for="step-request-${index}">Saved request for step ${index + 1}</label><select id="step-request-${index}" data-step-field="request_id"><option value="">Choose a saved request…</option>${state.workspace.requests.map((request) => `<option value="${escapeHTML(request.id)}"${request.id === step.request_id ? " selected" : ""}>${escapeHTML(request.method)} · ${escapeHTML(request.name)}</option>`).join("")}</select><div class="step-buttons"><button type="button" class="icon-button" data-step-action="up" ${index === 0 ? "disabled" : ""} aria-label="Move step ${index + 1} up" title="Move up">↑</button><button type="button" class="icon-button" data-step-action="down" ${index === steps.length - 1 ? "disabled" : ""} aria-label="Move step ${index + 1} down" title="Move down">↓</button><button type="button" class="icon-button" data-step-action="remove" aria-label="Remove step ${index + 1}" title="Remove step">×</button></div></div><div class="step-requirement"><label class="checkbox-label" for="step-required-${index}"><input id="step-required-${index}" type="checkbox" data-step-field="required" aria-describedby="step-required-help-${index}"${step.required === true ? " checked" : ""}> Required step</label><span id="step-required-help-${index}">Stop the sequence if this step fails, even when continuing after other failures.</span></div><details class="step-overrides"><summary>Step variables <span>· JSON overrides</span></summary><label class="sr-only" for="step-variables-${index}">Variable overrides for step ${index + 1}</label><textarea id="step-variables-${index}" class="code-input compact" data-step-field="_variablesText" spellcheck="false">${escapeHTML(step._variablesText || "{}")}</textarea></details></article>`).join("") || `<div class="editor-card empty-copy">${state.workspace.requests.length ? "Add your first step to start building a sequence." : "Save a request first, then add it as a sequence step."}</div>`;
 }
 
 async function runSequence() {
@@ -632,14 +632,14 @@ function wireEvents() {
   }));
   $("stop-on-failure").addEventListener("change", (event) => { state.draft.stop_on_failure = event.target.checked; setDirty(); });
   $("add-sequence-step").addEventListener("click", () => {
-    state.draft.steps.push({id: uid(), request_id: state.workspace.requests[0]?.id || "", variables: {}, _variablesText: "{}"});
+    state.draft.steps.push({id: uid(), request_id: state.workspace.requests[0]?.id || "", variables: {}, required: false, _variablesText: "{}"});
     renderSteps(); setDirty();
   });
   $("sequence-steps").addEventListener("input", (event) => {
     const stepElement = event.target.closest("[data-step-index]");
     const field = event.target.dataset.stepField;
     if (!stepElement || !field) return;
-    state.draft.steps[Number(stepElement.dataset.stepIndex)][field] = event.target.value; setDirty();
+    state.draft.steps[Number(stepElement.dataset.stepIndex)][field] = event.target.type === "checkbox" ? event.target.checked : event.target.value; setDirty();
   });
   $("sequence-steps").addEventListener("click", (event) => {
     const button = event.target.closest("[data-step-action]");

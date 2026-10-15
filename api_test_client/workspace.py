@@ -133,6 +133,8 @@ def validate_workspace(value: dict) -> dict:
         for step in steps:
             if not isinstance(step, dict) or step.get("request_id") not in request_ids:
                 raise ValueError("A sequence step references an unknown request.")
+            if not isinstance(step.get("required", False), bool):
+                raise ValueError("Step required must be a boolean.")
             if not isinstance(step.setdefault("variables", {}), dict):
                 raise ValueError("Step variables must be a JSON object.")
     if value.get("active_environment_id") not in environment_ids:
@@ -225,9 +227,15 @@ def _known_secrets(workspace):
     return sorted(secrets, key=len, reverse=True)
 
 
+def _json_secret_variants(secrets):
+    """Credentials can also appear inside serialized JSON string values."""
+    return {variant for secret in secrets for variant in (
+        secret, json.dumps(secret, ensure_ascii=False)[1:-1], json.dumps(secret, ensure_ascii=True)[1:-1])}
+
+
 def redact_report(value, workspace):
     """Mask known credentials and common response token fields in CLI reports."""
-    raw_secrets = _known_secrets(workspace)
+    raw_secrets = _json_secret_variants(_known_secrets(workspace))
     secrets = sorted({variant for secret in raw_secrets for variant in (secret, quote(secret, safe=""), quote_plus(secret, safe=""))}, key=len, reverse=True)
     credential_params = {item.get("auth", {}).get("header", "X-API-Key").lower()
                          for item in workspace.get("environments", []) + workspace.get("requests", [])
@@ -246,8 +254,7 @@ def redact_report(value, workspace):
             if isinstance(result.get("body"), str):
                 try:
                     parsed = json.loads(result["body"])
-                    if isinstance(parsed, (dict, list)):
-                        result["body"] = json.dumps(visit(parsed), ensure_ascii=False)
+                    result["body"] = json.dumps(visit(parsed), ensure_ascii=False)
                 except (ValueError, TypeError):
                     pass
             return result
@@ -263,7 +270,7 @@ def redact_report(value, workspace):
 def export_workspace(workspace):
     """Portable collections omit locally held credentials by default."""
     exported = copy.deepcopy(workspace)
-    secrets = _known_secrets(workspace)
+    secrets = sorted(_json_secret_variants(_known_secrets(workspace)), key=len, reverse=True)
     credential_headers = {"authorization", "cookie", "proxy-authorization", "x-api-key"}
     for item in workspace.get("environments", []) + workspace.get("requests", []):
         if item.get("auth", {}).get("type") == "api_key":

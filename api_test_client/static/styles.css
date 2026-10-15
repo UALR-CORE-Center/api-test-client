@@ -1300,6 +1300,17 @@ main {
   background:#f1f5ef;
 }
 
+.step-requirement {
+  padding:0 15px 13px;
+}
+
+.step-requirement>span {
+  display:block;
+  margin:5px 0 0 23px;
+  color:#829784;
+  font-size:10px;
+}
+
 .step-overrides {
   border-top:1px solid #edf1eb;
   padding:10px 15px 13px;
