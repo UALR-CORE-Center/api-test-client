@@ -83,18 +83,20 @@ class StartupConfigurationTests(unittest.TestCase):
         bodies = self.directory / "payloads"
         bodies.mkdir()
         body = bodies / "request.json"
-        payload = '{\n  "message": "{{message}}", "nested": [true, 3]\n}\n'
-        body.write_text(payload, encoding="utf-8")
         request = self.workspace["requests"][1]
         request.pop("body")
         request.pop("body_type")
         request["body_file"] = "payloads/request.json"
         self.write(self.config, self.workspace)
-        value, sources = load_config_sources(self.config)
-        self.assertEqual(value["requests"][1]["body"], payload)
-        self.assertEqual(value["requests"][1]["body_type"], "json")
-        self.assertNotIn("body_file", value["requests"][1])
-        self.assertEqual(sources, (self.config.resolve(), body.resolve()))
+        for newline in ("\n", "\r\n"):
+            with self.subTest(newline=repr(newline)):
+                payload = '{\n  "message": "{{message}}", "nested": [true, 3]\n}\n'.replace("\n", newline)
+                body.write_bytes(payload.encode("utf-8"))
+                value, sources = load_config_sources(self.config)
+                self.assertEqual(value["requests"][1]["body"], payload)
+                self.assertEqual(value["requests"][1]["body_type"], "json")
+                self.assertNotIn("body_file", value["requests"][1])
+                self.assertEqual(sources, (self.config.resolve(), body.resolve()))
 
     def test_body_and_body_file_are_ambiguous_even_if_body_is_empty(self):
         self.workspace["requests"][0]["body_file"] = "payload.json"
